@@ -181,7 +181,7 @@ if paths:
     bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR)
 
     st.markdown("### Vorschau-Frame")
-    st.image(bg_img, caption="Referenz-Frame", use_container_width=True)
+    st.image(bg_img, caption="Referenz-Frame", use_column_width=True)
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
