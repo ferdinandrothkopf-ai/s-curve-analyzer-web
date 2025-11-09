@@ -1,10 +1,11 @@
+# app.py
 import os, io, base64, tempfile, time
 import cv2
 import numpy as np
 import streamlit as st
+from PIL import Image, ImageDraw
 from ultralytics import YOLO
 from streamlit_drawable_canvas import st_canvas
-from PIL import Image
 
 # =================== Utils ===================
 def load_first_frame(video_path, max_w=960):
@@ -106,27 +107,29 @@ def detect_times(video_path, entry_line, exit_line, model):
     valid.sort(key=lambda x: x[3])
     return valid, fps, first
 
-# ============ Canvas Helper (zeigt garantiert Hintergrund) ============
+# ============ Robuste Canvas-Helper ============
+
+def pil_to_data_url(pil_img: Image.Image) -> str:
+    buf = io.BytesIO()
+    pil_img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
 def draw_canvas(bg_image: Image.Image, width: int, height: int, key: str,
                 stroke_color: str, fill_color: str):
     """
-    Versucht zuerst background_image_url (Data-URL),
-    fällt bei TypeError automatisch auf background_image (PIL) zurück.
+    Zeigt den Hintergrund sicher im Canvas.
+    1) Try: background_image_url (Data-URL), 2) Fallback: background_image (PIL).
     """
-    # auf Zielgröße skalieren
     bg_scaled = bg_image.resize((width, height), Image.BILINEAR)
 
-    # 1) Versuch: Data-URL (falls deine Paketversion das Feature kennt)
+    # Variante A: Data-URL (wenn Version das kann)
     try:
-        buf = io.BytesIO()
-        bg_scaled.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        bg_url = f"data:image/png;base64,{b64}"
         return st_canvas(
             fill_color=fill_color,
             stroke_width=3,
             stroke_color=stroke_color,
-            background_image_url=bg_url,    # <— Variante A
+            background_image_url=pil_to_data_url(bg_scaled),
             update_streamlit=True,
             height=height, width=width,
             drawing_mode="line",
@@ -134,13 +137,13 @@ def draw_canvas(bg_image: Image.Image, width: int, height: int, key: str,
             display_toolbar=False,
         )
     except TypeError:
-        # 2) Fallback: direktes PIL-Bild (für ältere Versionen)
+        # Variante B: klassisch mit PIL
         return st_canvas(
             fill_color=fill_color,
             stroke_width=3,
             stroke_color=stroke_color,
-            background_image=bg_scaled.convert("RGBA"),  # eigene Instanz
-            background_color=None,                       # wichtig!
+            background_image=bg_scaled.convert("RGBA").copy(),
+            background_color=None,    # None ist mit älteren Builds stabiler als "#00000000"
             update_streamlit=True,
             height=height, width=width,
             drawing_mode="line",
@@ -208,6 +211,28 @@ if paths:
     canvas_w = min(600, bg_img.width)             # bei Bedarf 512–720 anpassen
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
 
+    # -------- Diagnose (optional) --------
+    if st.checkbox("Diagnose-Canvas anzeigen (Hilft bei weißen Hintergründen)"):
+        # synthetischer Checker
+        tst_w, tst_h = 512, 320
+        checker = Image.new("RGBA", (tst_w, tst_h), (240, 240, 240, 255))
+        d = ImageDraw.Draw(checker)
+        for y in range(0, tst_h, 40):
+            for x in range(0, tst_w, 40):
+                if (x//40 + y//40) % 2 == 0:
+                    d.rectangle([x, y, x+40, y+40], fill=(200, 230, 200, 255))
+        st.caption("Diag A) Checker-Hintergrund")
+        _ = draw_canvas(checker.convert("RGB"), tst_w, tst_h, key="diag_checker",
+                        stroke_color="#333333", fill_color="rgba(0,0,0,0.0)")
+
+        st.caption("Diag B) Dein Frame skaliert")
+        _ = draw_canvas(bg_img, canvas_w, canvas_h,
+                        key=f"diag_frame_{st.session_state.ref_idx}",
+                        stroke_color="#333333", fill_color="rgba(0,0,0,0.0)")
+        st.write({"bg_img_size": (bg_img.width, bg_img.height),
+                  "canvas_size": (canvas_w, canvas_h)})
+
+    # -------- Sektorlinien zeichnen --------
     st.subheader("Sektorlinien zeichnen")
     col1, col2 = st.columns(2, gap="large")
 
@@ -225,6 +250,7 @@ if paths:
             stroke_color="#ff0000", fill_color="rgba(255,0,0,0.1)"
         )
 
+    # -------------------------------------------------
     if st.button("Analysieren", type="primary"):
         entry_line = line_from_canvas(entry.json_data)
         exit_line  = line_from_canvas(exitc.json_data)
