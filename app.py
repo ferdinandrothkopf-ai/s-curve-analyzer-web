@@ -10,24 +10,36 @@ from PIL import Image
 from ultralytics import YOLO
 from streamlit_drawable_canvas import st_canvas
 
-# --- Shim: fügt st_image.image_to_url nach, falls in deiner Streamlit-Version entfernt ---
+# --- Robust-Shim für alte drawable-canvas Versionen ---
+# Stellt st_image.image_to_url bereit (Signatur-kompatibel).
 try:
     from streamlit.elements import image as _st_image
     if not hasattr(_st_image, "image_to_url"):
         import base64
         from io import BytesIO
-        def _image_to_url(img, width=None, clamp=False, channels="RGB", output_format="PNG"):
+        from PIL import Image as _PILImage
+        import numpy as _np
+
+        def image_to_url(*args, **kwargs):
+            img = args[0] if args else kwargs.get("image")
+            if isinstance(img, _np.ndarray):
+                if img.ndim == 3 and img.shape[2] == 3:
+                    img = _PILImage.fromarray(img.astype("uint8"), mode="RGB")
+                else:
+                    img = _PILImage.fromarray(img.astype("uint8"))
+            elif not isinstance(img, _PILImage.Image):
+                img = _PILImage.open(img)
+
             buf = BytesIO()
-            # img ist PIL.Image
-            img.save(buf, format=output_format)
+            img.save(buf, format="PNG")
             b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            url = f"data:image/{output_format.lower()};base64,{b64}"
-            # altes API-Pattern: (url, dims_dict)
-            return url, {"width": getattr(img, "width", None), "height": getattr(img, "height", None)}
-        _st_image.image_to_url = _image_to_url
+            url = f"data:image/png;base64,{b64}"
+            dims = {"width": getattr(img, "width", None), "height": getattr(img, "height", None)}
+            return url, dims
+
+        _st_image.image_to_url = image_to_url
 except Exception:
     pass
-
 
 # ========================= Utils =========================
 
@@ -73,13 +85,6 @@ def scale_line_to_frame(line, sx, sy):
     (x1, y1), (x2, y2) = line
     return ((x1 * sx, y1 * sy), (x2 * sx, y2 * sy))
 
-def pil_to_data_url(img: Image.Image, fmt: str = "PNG") -> str:
-    """Für neue Streamlit-Versionen: Data-URL für st_canvas.background_image_url."""
-    buf = BytesIO(); img.save(buf, format=fmt)
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/{fmt.lower()};base64,{b64}"
-
-# Pillow Resampling kompatibel halten
 try:
     RESAMPLE = Image.Resampling.BILINEAR
 except Exception:
@@ -87,8 +92,6 @@ except Exception:
 
 # ===== Kompatibilitäts-Wrapper für st_canvas =====
 import inspect
-from streamlit_drawable_canvas import st_canvas
-
 def draw_canvas(bg_pil, *, height, width, key, stroke_color="#00ff00"):
     """Kompatibel mit alten & neuen drawable-canvas-Versionen."""
     common = dict(
@@ -103,27 +106,23 @@ def draw_canvas(bg_pil, *, height, width, key, stroke_color="#00ff00"):
         key=key,
     )
     params = inspect.signature(st_canvas).parameters
-    if "background_image_url" in params:   # neuere Lib
+    if "background_image_url" in params:  # neuere Lib
         import base64
         from io import BytesIO
         buf = BytesIO(); bg_pil.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         url = f"data:image/png;base64,{b64}"
         return st_canvas(background_image=None, background_image_url=url, **common)
-    else:                                   # ältere Lib
+    else:  # ältere Lib
         return st_canvas(background_image=bg_pil, **common)
 
-
-
 # ========================= Simple IoU Tracker =========================
-# Minimaler Frame-zu-Frame-Tracker ohne externe Abhängigkeiten
-
 class SimpleTracker:
     def __init__(self, iou_thresh=0.3, max_age=30):
         self.iou_thresh = iou_thresh
         self.max_age = max_age
         self.next_id = 1
-        self.tracks = {}  # id -> {"box":(x1,y1,x2,y2), "age":0, "last_center":(x,y)}
+        self.tracks = {}
 
     @staticmethod
     def iou(a, b):
@@ -135,18 +134,14 @@ class SimpleTracker:
         inter = iw * ih
         area_a = (ax2 - ax1) * (ay2 - ay1)
         area_b = (bx2 - bx1) * (by2 - by1)
-        denom = area_a + area_b - inter + 1e-6
-        return inter / denom
+        return inter / (area_a + area_b - inter + 1e-6)
 
     def update(self, detections):
-        # detections: list of (x1,y1,x2,y2)
         assigned = set()
-        # 1) Versuche existierende Tracks zu matchen (greedy nach IoU)
         for tid, t in list(self.tracks.items()):
             best_iou, best_j = 0.0, -1
             for j, d in enumerate(detections):
-                if j in assigned:
-                    continue
+                if j in assigned: continue
                 i = self.iou(t["box"], d)
                 if i > best_iou:
                     best_iou, best_j = i, j
@@ -159,21 +154,14 @@ class SimpleTracker:
                 if self.tracks[tid]["age"] > self.max_age:
                     del self.tracks[tid]
 
-        # 2) Neue Tracks für unzugeordnete Detections
         for j, d in enumerate(detections):
-            if j in assigned:
-                continue
-            self.tracks[self.next_id] = {"box": d, "age": 0, "last_center": None}
-            self.next_id += 1
+            if j not in assigned:
+                self.tracks[self.next_id] = {"box": d, "age": 0, "last_center": None}
+                self.next_id += 1
 
-        # 3) Ausgabe: (id, box)
-        out = []
-        for tid, t in self.tracks.items():
-            out.append((tid, t["box"]))
-        return out
+        return [(tid, t["box"]) for tid, t in self.tracks.items()]
 
 # ========================= App =========================
-
 st.set_page_config(page_title="Sektorzeiten (einfach)", layout="wide")
 st.title("🏁 Sektorzeiten aus Video")
 
@@ -185,92 +173,68 @@ st.markdown(
 uploaded = st.file_uploader("Video (MP4/MOV)", type=["mp4", "mov", "m4v"], accept_multiple_files=False)
 
 if uploaded:
-    # in Tempfile speichern
     suffix = os.path.splitext(uploaded.name)[1].lower()
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     tfile.write(uploaded.read()); tfile.flush(); tfile.close()
     video_path = tfile.name
 
-    # ersten Frame laden
     first_bgr = load_first_frame(video_path, max_w=1280)
     if first_bgr is None:
         st.error("Konnte ersten Frame nicht laden."); st.stop()
 
-    # Vorschau
-    st.image(to_rgb(first_bgr), caption="Erster Frame", use_container_width=False, width=min(960, first_bgr.shape[1]))
+    st.image(to_rgb(first_bgr), caption="Erster Frame", width=min(960, first_bgr.shape[1]))
 
-    # Canvas-Hintergrund auf <=640px Breite skalieren
     first_rgb = to_rgb(first_bgr)
     bg_img = Image.fromarray(first_rgb).convert("RGB")
     canvas_w = min(640, bg_img.width)
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
     bg_canvas = bg_img.resize((canvas_w, canvas_h), RESAMPLE)
 
-    # Skalierungsfaktoren Canvas→Original
     sx = first_bgr.shape[1] / float(canvas_w)
     sy = first_bgr.shape[0] / float(canvas_h)
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
 
-    # robuster Canvas-Aufruf (Data-URL für neuere Streamlit-Versionen)
-    bg_url = pil_to_data_url(bg_canvas, "PNG")
-
     with c1:
         st.markdown("**Einfahrts-Linie**")
-        entry_canvas = draw_canvas(
-            bg_canvas, height=canvas_h, width=canvas_w,
-            key="entry_canvas", stroke_color="#00ff00"
-        )
+        entry_canvas = draw_canvas(bg_canvas, height=canvas_h, width=canvas_w, key="entry_canvas", stroke_color="#00ff00")
 
     with c2:
         st.markdown("**Ausfahrts-Linie**")
-        exit_canvas = draw_canvas(
-            bg_canvas, height=canvas_h, width=canvas_w,
-            key="exit_canvas", stroke_color="#ff0000"
-        )
+        exit_canvas = draw_canvas(bg_canvas, height=canvas_h, width=canvas_w, key="exit_canvas", stroke_color="#ff0000")
 
-    # Linien (Canvas-Koords) extrahieren und auf Framegröße skalieren
     entry_line_c = line_from_canvas(getattr(entry_canvas, "json_data", None))
-    exit_line_c  = line_from_canvas(getattr(exit_canvas,  "json_data", None))
+    exit_line_c = line_from_canvas(getattr(exit_canvas, "json_data", None))
     entry_line = scale_line_to_frame(entry_line_c, sx, sy) if entry_line_c else None
-    exit_line  = scale_line_to_frame(exit_line_c,  sx, sy) if exit_line_c  else None
+    exit_line = scale_line_to_frame(exit_line_c, sx, sy) if exit_line_c else None
 
     ready = entry_line is not None and exit_line is not None
     if not ready:
         st.info("Bitte **beide** Linien ziehen (Start & Ende).")
 
-    # ---------------- Analyse-Button ----------------
     if st.button("Analysieren", type="primary", disabled=not ready):
         st.write("🔎 Erkenne & tracke Fahrzeuge …")
-        model = YOLO("yolov8n.pt")  # klein & schnell
+        model = YOLO("yolov8n.pt")
         tracker = SimpleTracker(iou_thresh=0.3, max_age=20)
 
-        # Zeiten-Log: tid -> {"entry": float|None, "exit": float|None}
-        timings = {}
-        last_centers = {}
-
+        timings, last_centers = {}, {}
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-
-        # Wir lesen selbst frame-weise und lassen YOLO auf numpy-Frames laufen
         frame_i = 0
+
         while True:
             ok, frame = cap.read()
-            if not ok:
-                break
-            # detect only vehicles: classes=[2,3,5,7] (car, motorcycle, bus, truck)
+            if not ok: break
             yres = model.predict(frame, classes=[2, 3, 5, 7], conf=0.25, imgsz=960, verbose=False)
             boxes = []
             if yres and len(yres) > 0 and yres[0].boxes is not None:
                 xyxys = yres[0].boxes.xyxy.cpu().numpy()
                 for b in xyxys:
-                    x1, y1, x2, y2 = b.tolist()
-                    boxes.append((x1, y1, x2, y2))
+                    boxes.append(tuple(b.tolist()))
 
             tracks = tracker.update(boxes)
 
-            # pro Track die Zentren bewegen & Schnitt mit Linien prüfen
             for tid, box in tracks:
                 cx, cy = center_of_box(box)
                 p2 = (cx, cy)
@@ -284,28 +248,22 @@ if uploaded:
                     timings[tid]["exit"] = frame_i / fps
 
                 last_centers[tid] = p2
-
             frame_i += 1
-
         cap.release()
 
-        # Ergebnisse zusammenbauen
         rows = []
         for tid, t in timings.items():
-            t_in, t_out = t["entry"], t["exit"]
-            if t_in is not None and t_out is not None and t_out > t_in:
+            if t["entry"] and t["exit"] and t["exit"] > t["entry"]:
                 rows.append({
                     "Fahrzeug-ID": int(tid),
-                    "t_in [s]": round(t_in, 3),
-                    "t_out [s]": round(t_out, 3),
-                    "Sektorzeit [s]": round(t_out - t_in, 3),
+                    "t_in [s]": round(t["entry"], 3),
+                    "t_out [s]": round(t["exit"], 3),
+                    "Sektorzeit [s]": round(t["exit"] - t["entry"], 3),
                 })
 
         if not rows:
-            st.warning("Keine gültigen Sektorzeiten erkannt. Prüfe Linienposition und Videoqualität.")
-            st.stop()
+            st.warning("Keine gültigen Sektorzeiten erkannt."); st.stop()
 
-        # Nach schnellster Zeit sortieren und anzeigen
         rows = sorted(rows, key=lambda r: r["Sektorzeit [s]"])
-        st.success(f"Fertig! {len(rows)} Fahrzeuge mit gültiger Sektorzeit gefunden.")
+        st.success(f"Fertig! {len(rows)} Fahrzeuge erkannt.")
         st.dataframe(rows, use_container_width=True)
