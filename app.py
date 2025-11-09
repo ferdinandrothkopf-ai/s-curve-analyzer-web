@@ -178,30 +178,35 @@ if paths:
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
-    with c1:
-        entry = st_canvas(
-            fill_color="rgba(0,255,0,0.1)",
-            stroke_width=3,
-            stroke_color="#00ff00",
-            background_image=bg_img,
-            background_color=None,
-            height=bg_img.height,
-            width=bg_img.width,
-            drawing_mode="line",
-            key="entry_canvas",
-        )
-    with c2:
-        exitc = st_canvas(
-            fill_color="rgba(255,0,0,0.1)",
-            stroke_width=3,
-            stroke_color="#ff0000",
-            background_image=bg_img,
-            background_color=None,
-            height=bg_img.height,
-            width=bg_img.width,
-            drawing_mode="line",
-            key="exit_canvas",
-        )
+    # links: Einfahrt
+with c1:
+    entry = st_canvas(
+        fill_color="rgba(0,255,0,0.1)",
+        stroke_width=3,
+        stroke_color="#00ff00",
+        background_image=bg_img,
+        background_color="#00000000",     # transparent statt None
+        update_streamlit=True,            # wichtig!
+        height=int(bg_img.height),
+        width=int(bg_img.width),
+        drawing_mode="line",
+        key="entry_canvas",
+    )
+
+# rechts: Ausfahrt
+with c2:
+    exitc = st_canvas(
+        fill_color="rgba(255,0,0,0.1)",
+        stroke_width=3,
+        stroke_color="#ff0000",
+        background_image=bg_img,
+        background_color="#00000000",
+        update_streamlit=True,            # wichtig!
+        height=int(bg_img.height),
+        width=int(bg_img.width),
+        drawing_mode="line",
+        key="exit_canvas",
+    )
 
     if st.button("Analysieren", type="primary"):
         entry_line = line_from_canvas(entry.json_data)
