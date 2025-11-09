@@ -106,6 +106,48 @@ def detect_times(video_path, entry_line, exit_line, model):
     valid.sort(key=lambda x: x[3])
     return valid, fps, first
 
+# ============ Canvas Helper (zeigt garantiert Hintergrund) ============
+def draw_canvas(bg_image: Image.Image, width: int, height: int, key: str,
+                stroke_color: str, fill_color: str):
+    """
+    Versucht zuerst background_image_url (Data-URL),
+    fällt bei TypeError automatisch auf background_image (PIL) zurück.
+    """
+    # auf Zielgröße skalieren
+    bg_scaled = bg_image.resize((width, height), Image.BILINEAR)
+
+    # 1) Versuch: Data-URL (falls deine Paketversion das Feature kennt)
+    try:
+        buf = io.BytesIO()
+        bg_scaled.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        bg_url = f"data:image/png;base64,{b64}"
+        return st_canvas(
+            fill_color=fill_color,
+            stroke_width=3,
+            stroke_color=stroke_color,
+            background_image_url=bg_url,    # <— Variante A
+            update_streamlit=True,
+            height=height, width=width,
+            drawing_mode="line",
+            key=key,
+            display_toolbar=False,
+        )
+    except TypeError:
+        # 2) Fallback: direktes PIL-Bild (für ältere Versionen)
+        return st_canvas(
+            fill_color=fill_color,
+            stroke_width=3,
+            stroke_color=stroke_color,
+            background_image=bg_scaled.convert("RGBA"),  # eigene Instanz
+            background_color=None,                       # wichtig!
+            update_streamlit=True,
+            height=height, width=width,
+            drawing_mode="line",
+            key=key,
+            display_toolbar=False,
+        )
+
 # =================== UI ===================
 st.set_page_config(page_title="S-Curve Analyzer (Web)", layout="wide")
 st.title("🏎️ S-Curve Analyzer – komplett im Browser (kostenlos)")
@@ -162,43 +204,25 @@ if paths:
     st.markdown("**Vorschau-Frame:**")
     st.image(bg_img)
 
-    # ---------- robuster Canvas-Hintergrund über Data-URL ----------
-    # Skalieren + sicherstellen, dass das Bild RGBA ist
-    canvas_w = min(600, bg_img.width)
+    # Canvas-Größe (gleich breite Spalten)
+    canvas_w = min(600, bg_img.width)             # bei Bedarf 512–720 anpassen
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
-    bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR).convert("RGBA")
 
     st.subheader("Sektorlinien zeichnen")
-    c1, c2 = st.columns(2, gap="large")
+    col1, col2 = st.columns(2, gap="large")
 
-    with c1:
-        entry = st_canvas(
-            fill_color="rgba(0,255,0,0.1)",
-            stroke_width=3,
-            stroke_color="#00ff00",
-            background_image=bg_canvas.copy(),   # <-- PIL Image, eigene Instanz
-            background_color=None,               # wichtig: None statt "#00000000"
-            update_streamlit=True,
-            height=int(canvas_h),
-            width=int(canvas_w),
-            drawing_mode="line",
+    with col1:
+        entry = draw_canvas(
+            bg_image=bg_img, width=canvas_w, height=canvas_h,
             key=f"entry_canvas_{st.session_state.ref_idx}",
-            display_toolbar=False,
+            stroke_color="#00ff00", fill_color="rgba(0,255,0,0.1)"
         )
 
-    with c2:
-        exitc = st_canvas(
-            fill_color="rgba(255,0,0,0.1)",
-            stroke_width=3,
-            stroke_color="#ff0000",
-            background_image=bg_canvas.copy(),   # eigene Instanz
-            background_color=None,
-            update_streamlit=True,
-            height=int(canvas_h),
-            width=int(canvas_w),
-            drawing_mode="line",
+    with col2:
+        exitc = draw_canvas(
+            bg_image=bg_img, width=canvas_w, height=canvas_h,
             key=f"exit_canvas_{st.session_state.ref_idx}",
-            display_toolbar=False,
+            stroke_color="#ff0000", fill_color="rgba(255,0,0,0.1)"
         )
 
     if st.button("Analysieren", type="primary"):
