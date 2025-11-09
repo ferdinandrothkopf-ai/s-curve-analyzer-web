@@ -1,14 +1,15 @@
 streamlit==1.37.1
-# Wichtig: OpenCV + NumPy kompatibel pinnen
+
+# NumPy < 2, damit cv2 sauber importiert
 numpy<2
 opencv-python-headless==4.9.0.80
 
-# YOLO / Ultralytics (benötigt PyTorch)
+# Ultralytics + PyTorch CPU (Versionen passen zu Python 3.10/3.11)
 ultralytics==8.2.103
 torch==2.2.2
 torchvision==0.17.2
 
-# UI & Video
+# UI / Video
 streamlit-drawable-canvas==0.9.3
 moviepy==1.0.3
 imageio-ffmpeg==0.4.9
