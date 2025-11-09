@@ -151,13 +151,12 @@ def click_two_points_on_image(img_bgr, title: str, key: str):
     }
 
     st.caption("❗ Klicke **genau 2 Punkte** (Start und Ende der Linie).")
-    events = plotly_events(
+        events = plotly_events(
         fig,
         click_event=True,
         hover_event=False,
         select_event=False,
-        key=key,
-        config=config
+        key=key
     )
 
     # Extract first two clicks (x,y)
