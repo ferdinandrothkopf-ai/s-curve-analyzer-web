@@ -174,21 +174,28 @@ if paths:
     bg_img = Image.fromarray(img_rgb).convert("RGB")
 
     st.markdown("**Vorschau-Frame:**")
-    st.image(bg_img, use_column_width=False)
+    st.image(bg_img)  # Preview bleibt in Originalskalierung okay
+
+    # --- NEU: Canvas-Größe an Spaltenbreite anpassen ---
+    # sichere Breite pro Spalte (faustwert); kannst du anpassen:
+    canvas_target_w = min(600, bg_img.width)
+    canvas_target_h = int(bg_img.height * canvas_target_w / bg_img.width)
+    bg_canvas = bg_img.resize((canvas_target_w, canvas_target_h))  # PIL-Image
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
+
     # links: Einfahrt
     with c1:
         entry = st_canvas(
             fill_color="rgba(0,255,0,0.1)",
             stroke_width=3,
             stroke_color="#00ff00",
-            background_image=bg_img,
-            background_color="#00000000",     # transparent statt None
-            update_streamlit=True,            # wichtig!
-            height=int(bg_img.height),
-            width=int(bg_img.width),
+            background_image=bg_canvas,         # <-- das skalierte PIL-Bild
+            background_color="#00000000",       # transparent
+            update_streamlit=True,
+            height=int(canvas_target_h),
+            width=int(canvas_target_w),
             drawing_mode="line",
             key="entry_canvas",
         )
@@ -199,11 +206,11 @@ if paths:
             fill_color="rgba(255,0,0,0.1)",
             stroke_width=3,
             stroke_color="#ff0000",
-            background_image=bg_img,
+            background_image=bg_canvas,         # <-- das skalierte PIL-Bild
             background_color="#00000000",
-            update_streamlit=True,            # wichtig!
-            height=int(bg_img.height),
-            width=int(bg_img.width),
+            update_streamlit=True,
+            height=int(canvas_target_h),
+            width=int(canvas_target_w),
             drawing_mode="line",
             key="exit_canvas",
         )
