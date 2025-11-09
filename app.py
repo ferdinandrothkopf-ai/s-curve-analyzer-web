@@ -1,11 +1,88 @@
-import os, tempfile, cv2, numpy as np, streamlit as st, time
+import io  # ganz oben oder hier importieren
+
+# ...
+st.markdown("**Vorschau-Frame:**")
+st.image(bg_img)
+
+# 1) Auf Spaltenbreite skalieren
+canvas_w = min(600, bg_img.width)
+canvas_h = int(bg_img.height * canvas_w / bg_img.width)
+bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR)
+
+# 2) PNG-Bytes erzeugen und für JEDEN Canvas separat öffnen
+buf1 = io.BytesIO()
+bg_canvas.save(buf1, format="PNG")
+buf1.seek(0)
+bg_for_entry = Image.open(io.BytesIO(buf1.getvalue())).convert("RGBA")  # eigene Instanz
+
+buf2 = io.BytesIO()
+bg_canvas.save(buf2, format="PNG")
+buf2.seek(0)
+bg_for_exit = Image.open(io.BytesIO(buf2.getvalue())).convert("RGBA")   # eigene Instanz
+
+st.subheader("Sektorlinien zeichnen")
+c1, c2 = st.columns(2, gap="large")
+
+with c1:
+    entry = st_canvas(
+        fill_color="rgba(0,255,0,0.1)",
+        stroke_width=3,
+        stroke_color="#00ff00",
+        background_image=bg_for_entry,        # PNG-Instanz 1
+        background_color="#00000000",
+        update_streamlit=True,
+        height=int(canvas_h),
+        width=int(canvas_w),
+        drawing_mode="line",
+        key=f"entry_canvas_{st.session_state.ref_idx}",   # eindeutiger key
+    )
+
+with c2:
+    exitc = st_canvas(
+        fill_color="rgba(255,0,0,0.1)",
+        stroke_width=3,
+        stroke_color="#ff0000",
+        background_image=bg_for_exit,         # PNG-Instanz 2
+        background_color="#00000000",
+        update_streamlit=True,
+        height=int(canvas_h),
+        width=int(canvas_w),
+        drawing_mode="line",
+        key=f"exit_canvas_{st.session_state.ref_idx}",    # eindeutiger key
+    )
+Warum das hilft
+
+Das Bild kommt als „frische“ PNG-Bytequelle (statt eines evtl. gecachten PIL-Objekts).
+
+Jede Canvas hat eigene Image-Instanz → kein internes Überschreiben.
+
+Keys ändern sich, wenn du den Referenz-Clip wechselst → sicheres Re-Mounting der Komponente.
+
+Falls es danach noch weiß bleibt, setz testweise canvas_w = 512 und klicke einmal auf Rerun (oben im Menü). Das ist der letzte kleine Hebel gegen ein sporadisches Fabric-JS Timing-Issue auf Cloud.
+
+
+
+
+
+
+
+You said:
+gebe mir den gesamten code
+
+
+
+ChatGPT said:
+hier ist der volle app.py mit allen Fixes (PNG-Bytes-Workaround, eigene Instanzen pro Canvas, stabile Keys, skalierte Canvas-Größe, Streamlit-1.33-kompatibel):
+
+python
+Copy code
+import os, io, tempfile, cv2, numpy as np, streamlit as st, time
 from ultralytics import YOLO
 from streamlit_drawable_canvas import st_canvas
-from moviepy.editor import VideoFileClip
 from PIL import Image
 
-# =============== Utils ===============
-def load_first_frame(video_path, max_w=1280):
+# =================== Utils ===================
+def load_first_frame(video_path, max_w=960):
     cap = cv2.VideoCapture(video_path)
     ok, frame = cap.read()
     cap.release()
@@ -25,9 +102,6 @@ def seg_intersection(p1, p2, q1, q2):
     def ccw(a, b, c):
         return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
     return (ccw(p1, q1, q2) != ccw(p2, q1, q2)) and (ccw(p1, p2, q1) != ccw(p1, p2, q2))
-
-def timecode(seconds):
-    return time.strftime("%M:%S", time.gmtime(seconds)) + f".{int((seconds % 1) * 1000):03d}"
 
 def alpha_blend(frames, alphas):
     out = np.zeros_like(frames[0], dtype=np.float32)
@@ -56,12 +130,12 @@ def line_from_canvas(json_data):
     return None
 
 def trim_clip(src_path, dst_path, t0, t1):
-    from moviepy.editor import VideoFileClip  # lazy import
+    # lazy import, damit Deploy schneller ist
+    from moviepy.editor import VideoFileClip
     with VideoFileClip(src_path) as clip:
         sub = clip.subclip(max(t0, 0), max(t1, 0))
-        sub.write_videofile(
-            dst_path, codec="libx264", audio=False, fps=clip.fps, verbose=False, logger=None
-        )
+        sub.write_videofile(dst_path, codec="libx264", audio=False,
+                            fps=clip.fps, verbose=False, logger=None)
 
 def detect_times(video_path, entry_line, exit_line, model):
     timings, last_centers = {}, {}
@@ -108,45 +182,36 @@ def detect_times(video_path, entry_line, exit_line, model):
     valid.sort(key=lambda x: x[3])
     return valid, fps, first
 
-# =============== UI ===============
+# =================== UI ===================
 st.set_page_config(page_title="S-Curve Analyzer (Web)", layout="wide")
 st.title("🏎️ S-Curve Analyzer – komplett im Browser (kostenlos)")
 
 st.markdown(
     "1. Lade **1–3 Stativ-Clips** der gleichen S-Kurve hoch.  \n"
-    "2. Wähle den Referenz-Clip und zeichne **Einfahrt**/**Ausfahrt**.  \n"
+    "2. Wähle den **Referenz-Clip** und zeichne **Einfahrt**/**Ausfahrt**.  \n"
     "3. **Analysieren** → Erkennung, Sektorzeiten, Auto-Trim & Overlay."
 )
 
-# --- Session State stabilisieren ---
-if "tmp_paths" not in st.session_state:
-    st.session_state.tmp_paths = []
-if "names" not in st.session_state:
-    st.session_state.names = []
-if "ref_idx" not in st.session_state:
-    st.session_state.ref_idx = 0
+# Session State
+if "tmp_paths" not in st.session_state: st.session_state.tmp_paths = []
+if "names"     not in st.session_state: st.session_state.names = []
+if "ref_idx"   not in st.session_state: st.session_state.ref_idx = 0
 
 uploaded = st.file_uploader(
     "Clips (MP4/MOV)", type=["mp4", "mov", "m4v"], accept_multiple_files=True
 )
-
-# Deckkraft & Exportbreite
 alpha_top = st.slider("Deckkraft obere Ebenen", 0.3, 0.8, 0.5, 0.05)
 out_width = st.select_slider("Exportbreite", options=[854, 960, 1280, 1600, 1920], value=1280)
 
-# Wenn neue Dateien hochgeladen wurden → dauerhaft speichern (bis Reload)
+# Upload → Tempfiles erzeugen
 if uploaded:
-    # Ersetze alte temp-files
     for p in st.session_state.tmp_paths:
-        try:
-            os.remove(p)
-        except Exception:
-            pass
-    st.session_state.tmp_paths = []
-    st.session_state.names = []
+        try: os.remove(p)
+        except Exception: pass
+    st.session_state.tmp_paths, st.session_state.names = [], []
     for uf in uploaded[:3]:
-        suffix = os.path.splitext(uf.name)[1].lower()
-        t = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        suf = os.path.splitext(uf.name)[1].lower()
+        t = tempfile.NamedTemporaryFile(delete=False, suffix=suf)
         t.write(uf.read()); t.flush(); t.close()
         st.session_state.tmp_paths.append(t.name)
         st.session_state.names.append(uf.name)
@@ -156,78 +221,67 @@ paths = st.session_state.tmp_paths
 names = st.session_state.names
 
 if paths:
-    # Auswahl des Referenz-Clips
     st.caption("Wähle den Clip, dessen erstes Frame als Zeichengrundlage dient.")
     st.session_state.ref_idx = st.selectbox(
         "Referenz-Clip", options=list(range(len(paths))),
-        index=st.session_state.ref_idx,
-        format_func=lambda i: names[i]
+        index=st.session_state.ref_idx, format_func=lambda i: names[i]
     )
 
-    # Preview zeigen (hilft beim Debuggen) + Canvas-Bild vorbereiten
+    # Preview + Basisbild
     first_frame = load_first_frame(paths[st.session_state.ref_idx], max_w=960)
     if first_frame is None:
-        st.error("Konnte ersten Frame nicht laden.")
-        st.stop()
+        st.error("Konnte ersten Frame nicht laden."); st.stop()
 
     img_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-    bg_img = Image.fromarray(img_rgb).convert("RGB")
+    bg_img  = Image.fromarray(img_rgb).convert("RGB")
 
     st.markdown("**Vorschau-Frame:**")
-    st.image(bg_img)  # Vorschau ok
+    st.image(bg_img)  # kompatibel mit Streamlit 1.33.0
 
-    # Canvas-Größe robust auf Spaltenbreite bringen
-    canvas_w = min(600, bg_img.width)       # kannst du auf 512–720 variieren
+    # ---------- robuster Canvas-Hintergrund ----------
+    # Auf Spaltenbreite skalieren
+    canvas_w = min(600, bg_img.width)             # bei Bedarf 512–720 anpassen
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
     bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR)
+
+    # PNG-Bytes -> eigene Instanz pro Canvas (Workaround gegen leeren Background)
+    buf1 = io.BytesIO(); bg_canvas.save(buf1, format="PNG"); buf1.seek(0)
+    bg_for_entry = Image.open(io.BytesIO(buf1.getvalue())).convert("RGBA")
+
+    buf2 = io.BytesIO(); bg_canvas.save(buf2, format="PNG"); buf2.seek(0)
+    bg_for_exit  = Image.open(io.BytesIO(buf2.getvalue())).convert("RGBA")
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
 
-    # Links: Einfahrt (eigene Image-Instanz!)
     with c1:
         entry = st_canvas(
-            fill_color="rgba(0,255,0,0.1)",
-            stroke_width=3,
-            stroke_color="#00ff00",
-            background_image=bg_canvas.copy(),     # <— eigenes Objekt
-            background_color="#00000000",          # transparent
-            update_streamlit=True,                 # Bild-Init erzwingen
-            height=int(canvas_h),
-            width=int(canvas_w),
-            drawing_mode="line",
-            key="entry_canvas",
-        )
-
-    # Rechts: Ausfahrt (eigene Image-Instanz!)
-    with c2:
-        exitc = st_canvas(
-            fill_color="rgba(255,0,0,0.1)",
-            stroke_width=3,
-            stroke_color="#ff0000",
-            background_image=bg_canvas.copy(),     # <— eigenes Objekt
+            fill_color="rgba(0,255,0,0.1)", stroke_width=3, stroke_color="#00ff00",
+            background_image=bg_for_entry,
             background_color="#00000000",
             update_streamlit=True,
-            height=int(canvas_h),
-            width=int(canvas_w),
+            height=int(canvas_h), width=int(canvas_w),
             drawing_mode="line",
-            key="exit_canvas",
+            key=f"entry_canvas_{st.session_state.ref_idx}",
         )
 
-    # Falls das Bild trotzdem nicht sichtbar ist (seltene FabricJS-Race-Condition):
-    if (entry.image_data is None and entry.json_data is None) or \
-       (exitc.image_data is None and exitc.json_data is None):
-        st.info(
-            "Wenn die Hintergründe weiß bleiben: einmal oben auf **Rerun** klicken "
-            "oder die Canvas-Breite in den Codezeilen (`canvas_w`) kleiner setzen (z. B. 512)."
+    with c2:
+        exitc = st_canvas(
+            fill_color="rgba(255,0,0,0.1)", stroke_width=3, stroke_color="#ff0000",
+            background_image=bg_for_exit,
+            background_color="#00000000",
+            update_streamlit=True,
+            height=int(canvas_h), width=int(canvas_w),
+            drawing_mode="line",
+            key=f"exit_canvas_{st.session_state.ref_idx}",
         )
+    # -------------------------------------------------
 
     if st.button("Analysieren", type="primary"):
         entry_line = line_from_canvas(entry.json_data)
-        exit_line = line_from_canvas(exitc.json_data)
+        exit_line  = line_from_canvas(exitc.json_data)
         if not entry_line or not exit_line:
-            st.error("Bitte beide Linien zeichnen.")
-            st.stop()
+            st.error("Bitte **beide** Linien zeichnen."); st.stop()
 
         model = YOLO("yolov8n.pt")
         results_table, trimmed = [], []
@@ -257,49 +311,43 @@ if paths:
         st.dataframe(results_table, use_container_width=True)
 
         if not trimmed:
-            st.warning("Keine gültigen Sektorzeiten erkannt.")
-            st.stop()
+            st.warning("Keine gültigen Sektorzeiten erkannt."); st.stop()
 
         st.markdown("### Overlay-Auswahl (bis 3)")
         pretty = [f"{names[i]} (ID {int(vid)}, {d:.3f}s)" for i, (p, vid, d) in enumerate(trimmed)]
-        sel = st.multiselect(
-            "Wähle Clips", options=list(range(len(pretty))),
-            format_func=lambda i: pretty[i],
-            default=list(range(min(3, len(pretty))))
-        )
+        sel = st.multiselect("Wähle Clips", options=list(range(len(pretty))),
+                             format_func=lambda i: pretty[i],
+                             default=list(range(min(3, len(pretty)))))
+
         if sel:
             chosen = [trimmed[i] for i in sel][:3]
             caps = [cv2.VideoCapture(p) for (p, _, _) in chosen]
             fps_list = [max(1.0, c.get(cv2.CAP_PROP_FPS) or 30.0) for c in caps]
             out_fps = min(fps_list)
+
             ok, ref = caps[0].read()
             if not ok:
                 for c in caps: c.release()
-                st.error("Fehler beim Overlay.")
-                st.stop()
+                st.error("Fehler beim Overlay."); st.stop()
             ref = resize_to_width(ref, out_width)
             h, w = ref.shape[:2]
 
-            if len(chosen) == 1:
-                alphas = [1.0]
-            elif len(chosen) == 2:
-                alphas = [1.0, alpha_top]
-            else:
-                alphas = [1.0, alpha_top, alpha_top]
+            if len(chosen) == 1: alphas = [1.0]
+            elif len(chosen) == 2: alphas = [1.0, alpha_top]
+            else: alphas = [1.0, alpha_top, alpha_top]
 
             out_path = os.path.join(tempfile.gettempdir(), "overlay.mp4")
             writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), out_fps, (w, h))
 
+            # Initiale Frames schreiben
             init_frames = [ref]
             for i in range(1, len(caps)):
                 ok, fr = caps[i].read()
-                if not ok:
-                    fr = np.zeros_like(ref)
-                else:
-                    fr = resize_to_width(fr, out_width)
+                fr = np.zeros_like(ref) if not ok else resize_to_width(fr, out_width)
                 init_frames.append(fr)
             writer.write(alpha_blend(init_frames, alphas[: len(init_frames)]))
 
+            # Rest
             while True:
                 frames, ended = [], 0
                 for c in caps:
@@ -308,8 +356,7 @@ if paths:
                         ended += 1
                         continue
                     frames.append(resize_to_width(fr, out_width))
-                if ended == len(caps):
-                    break
+                if ended == len(caps): break
                 while len(frames) < len(caps):
                     frames.append(np.zeros((h, w, 3), dtype=np.uint8))
                 writer.write(alpha_blend(frames, alphas[: len(frames)]))
@@ -319,9 +366,6 @@ if paths:
 
             st.success("Fertig! Overlay & Zeiten erzeugt.")
             st.video(out_path)
-            st.download_button(
-                "Overlay-Video herunterladen",
-                data=open(out_path, "rb").read(),
-                file_name="overlay.mp4",
-                mime="video/mp4",
-            )
+            st.download_button("Overlay-Video herunterladen",
+                               data=open(out_path, "rb").read(),
+                               file_name="overlay.mp4", mime="video/mp4")
