@@ -1,7 +1,8 @@
 streamlit==1.33.0
-streamlit-drawable-canvas==0.9.3
-pillow==10.4.0
 numpy==1.26.4
 opencv-python-headless==4.9.0.80
+pillow==10.4.0
 ultralytics==8.2.103
 moviepy==1.0.3
+plotly==5.22.0
+streamlit-plotly-events==0.0.6
