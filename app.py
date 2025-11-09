@@ -45,7 +45,6 @@ def resize_to_width(frame, width):
     return cv2.resize(frame, (width, int(h * s)), interpolation=cv2.INTER_AREA)
 
 def line_from_two_points(p, q):
-    # p=(x,y), q=(x,y)
     return (tuple(p), tuple(q))
 
 def trim_clip(src_path, dst_path, t0, t1):
@@ -109,28 +108,13 @@ def pil_to_data_url(img: Image.Image) -> str:
     return "data:image/png;base64," + b64
 
 def click_two_points_on_image(img_bgr, title: str, key: str):
-    """
-    Show the image as a Plotly Image trace (clickable) and return exactly two (x,y) clicks.
-    - Uses dragmode='pan' so dragging doesn't create a zoom box.
-    - Hides zoom/select/lasso tools in the modebar.
-    - Returns (p1, p2) as tuples in pixel coords (x to the right, y down).
-    """
-    # Convert to RGB for display
+    """Zeigt das Bild klickbar (Plotly) und gibt genau zwei (x,y)-Klicks zurück."""
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     h, w = img_rgb.shape[:2]
 
-    # 1) Use an Image trace (click events fire on it)
     fig = go.Figure(data=[go.Image(z=img_rgb)])
-
-    # 2) Axes & layout
-    fig.update_xaxes(
-        visible=False,
-        range=[0, w]
-    )
-    fig.update_yaxes(
-        visible=False,
-        range=[h, 0]
-    )
+    fig.update_xaxes(visible=False, range=[0, w])
+    fig.update_yaxes(visible=False, range=[h, 0])
     fig.update_layout(
         dragmode="pan",
         clickmode="event+select",
@@ -140,18 +124,8 @@ def click_two_points_on_image(img_bgr, title: str, key: str):
         title=title
     )
 
-    # 3) Clean modebar
-    config = {
-        "displaylogo": False,
-        "modeBarButtonsToRemove": [
-            "zoom2d", "select2d", "lasso2d", "autoscale", "toggleSpikelines",
-            "zoomIn2d", "zoomOut2d", "resetScale2d"
-        ],
-        "scrollZoom": False
-    }
-
     st.caption("❗ Klicke **genau 2 Punkte** (Start und Ende der Linie).")
-        events = plotly_events(
+    events = plotly_events(   # <— KEIN zusätzlicher Einzug hier!
         fig,
         click_event=True,
         hover_event=False,
@@ -159,7 +133,6 @@ def click_two_points_on_image(img_bgr, title: str, key: str):
         key=key
     )
 
-    # Extract first two clicks (x,y)
     pts = [(float(e["x"]), float(e["y"])) for e in events if ("x" in e and "y" in e)]
     if len(pts) >= 2:
         return pts[0], pts[1]
