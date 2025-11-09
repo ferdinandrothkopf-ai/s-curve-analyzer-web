@@ -3,9 +3,8 @@ from ultralytics import YOLO
 from streamlit_drawable_canvas import st_canvas
 from moviepy.editor import VideoFileClip
 from PIL import Image
-import imageio_ffmpeg
 
-# ----------------- Utils -----------------
+# =============== Utils ===============
 def load_first_frame(video_path, max_w=1280):
     cap = cv2.VideoCapture(video_path)
     ok, frame = cap.read()
@@ -57,6 +56,7 @@ def line_from_canvas(json_data):
     return None
 
 def trim_clip(src_path, dst_path, t0, t1):
+    from moviepy.editor import VideoFileClip  # lazy import
     with VideoFileClip(src_path) as clip:
         sub = clip.subclip(max(t0, 0), max(t1, 0))
         sub.write_videofile(
@@ -108,59 +108,83 @@ def detect_times(video_path, entry_line, exit_line, model):
     valid.sort(key=lambda x: x[3])
     return valid, fps, first
 
-# ----------------- UI -----------------
+# =============== UI ===============
 st.set_page_config(page_title="S-Curve Analyzer (Web)", layout="wide")
 st.title("🏎️ S-Curve Analyzer – komplett im Browser (kostenlos)")
 
 st.markdown(
     "1. Lade **1–3 Stativ-Clips** der gleichen S-Kurve hoch.  \n"
-    "2. Zeichne **Einfahrt** und **Ausfahrt** auf das Vorschaubild.  \n"
-    "3. Klicke **Analysieren** → Fahrzeug-Erkennung, Sektorzeiten, **Auto-Trim** und **Overlay** (bis 3)."
+    "2. Wähle den Referenz-Clip und zeichne **Einfahrt**/**Ausfahrt**.  \n"
+    "3. **Analysieren** → Erkennung, Sektorzeiten, Auto-Trim & Overlay."
 )
+
+# --- Session State stabilisieren ---
+if "tmp_paths" not in st.session_state:
+    st.session_state.tmp_paths = []
+if "names" not in st.session_state:
+    st.session_state.names = []
+if "ref_idx" not in st.session_state:
+    st.session_state.ref_idx = 0
 
 uploaded = st.file_uploader(
     "Clips (MP4/MOV)", type=["mp4", "mov", "m4v"], accept_multiple_files=True
 )
+
+# Deckkraft & Exportbreite
 alpha_top = st.slider("Deckkraft obere Ebenen", 0.3, 0.8, 0.5, 0.05)
 out_width = st.select_slider("Exportbreite", options=[854, 960, 1280, 1600, 1920], value=1280)
 
+# Wenn neue Dateien hochgeladen wurden → dauerhaft speichern (bis Reload)
 if uploaded:
-    # Temporäre Dateien erzeugen
-    tmp_paths = []
-    names = []
+    # Ersetze alte temp-files
+    for p in st.session_state.tmp_paths:
+        try:
+            os.remove(p)
+        except Exception:
+            pass
+    st.session_state.tmp_paths = []
+    st.session_state.names = []
     for uf in uploaded[:3]:
         suffix = os.path.splitext(uf.name)[1].lower()
         t = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
         t.write(uf.read()); t.flush(); t.close()
-        tmp_paths.append(t.name)
-        names.append(uf.name)
+        st.session_state.tmp_paths.append(t.name)
+        st.session_state.names.append(uf.name)
+    st.session_state.ref_idx = 0
 
-    # --- NEU: Auswahl, welches Video für die Linien als Hintergrund dient ---
-    st.caption("Wähle, aus welchem Clip das Vorschaubild zum Zeichnen der Linien verwendet wird.")
-    ref_idx = st.selectbox("Referenz-Clip für Linien", options=list(range(len(tmp_paths))),
-                           format_func=lambda i: names[i], index=0)
+paths = st.session_state.tmp_paths
+names = st.session_state.names
 
-    first_frame = load_first_frame(tmp_paths[ref_idx], max_w=1280)
+if paths:
+    # Auswahl des Referenz-Clips
+    st.caption("Wähle den Clip, dessen erstes Frame als Zeichengrundlage dient.")
+    st.session_state.ref_idx = st.selectbox(
+        "Referenz-Clip", options=list(range(len(paths))),
+        index=st.session_state.ref_idx,
+        format_func=lambda i: names[i]
+    )
+
+    # Preview zeigen (hilft beim Debuggen) + Canvas-Bild vorbereiten
+    first_frame = load_first_frame(paths[st.session_state.ref_idx], max_w=1280)
     if first_frame is None:
         st.error("Konnte ersten Frame nicht laden.")
         st.stop()
 
-    # PIL-Image für den Canvas
     img_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-    bg_img = Image.fromarray(img_rgb)
-    if bg_img.mode != "RGB":
-        bg_img = bg_img.convert("RGB")
+    bg_img = Image.fromarray(img_rgb).convert("RGB")
+
+    st.markdown("**Vorschau-Frame:**")
+    st.image(bg_img, use_container_width=False)
 
     st.subheader("Sektorlinien zeichnen")
-    c1, c2 = st.columns(2)
+    c1, c2 = st.columns(2, gap="large")
     with c1:
         entry = st_canvas(
             fill_color="rgba(0,255,0,0.1)",
             stroke_width=3,
             stroke_color="#00ff00",
             background_image=bg_img,
-            background_color=None,           # wichtig für korrektes Rendering
-            update_streamlit=True,           # zwingt Re-Render
+            background_color=None,
             height=bg_img.height,
             width=bg_img.width,
             drawing_mode="line",
@@ -173,14 +197,13 @@ if uploaded:
             stroke_color="#ff0000",
             background_image=bg_img,
             background_color=None,
-            update_streamlit=True,
             height=bg_img.height,
             width=bg_img.width,
             drawing_mode="line",
             key="exit_canvas",
         )
 
-    if st.button("Analysieren"):
+    if st.button("Analysieren", type="primary"):
         entry_line = line_from_canvas(entry.json_data)
         exit_line = line_from_canvas(exitc.json_data)
         if not entry_line or not exit_line:
@@ -188,11 +211,10 @@ if uploaded:
             st.stop()
 
         model = YOLO("yolov8n.pt")
-        results_table = []
-        trimmed = []
+        results_table, trimmed = [], []
 
         with st.spinner("Analysiere Clips …"):
-            for idx, vpath in enumerate(tmp_paths):
+            for idx, vpath in enumerate(paths):
                 valid, fps, _ = detect_times(vpath, entry_line, exit_line, model)
                 if not valid:
                     results_table.append(
@@ -205,8 +227,7 @@ if uploaded:
                     {"Clip": os.path.basename(vpath),
                      "VehicleID": int(best_id),
                      "Zeit": f"{dt:.3f}s",
-                     "t_in": f"{t_in:.3f}",
-                     "t_out": f"{t_out:.3f}"}
+                     "t_in": f"{t_in:.3f}", "t_out": f"{t_out:.3f}"}
                 )
                 pad = 0.15
                 outp = os.path.join(tempfile.gettempdir(), f"trim_{idx}.mp4")
@@ -261,8 +282,7 @@ if uploaded:
             writer.write(alpha_blend(init_frames, alphas[: len(init_frames)]))
 
             while True:
-                frames = []
-                ended = 0
+                frames, ended = [], 0
                 for c in caps:
                     ok, fr = c.read()
                     if not ok:
@@ -275,8 +295,7 @@ if uploaded:
                     frames.append(np.zeros((h, w, 3), dtype=np.uint8))
                 writer.write(alpha_blend(frames, alphas[: len(frames)]))
 
-            for c in caps:
-                c.release()
+            for c in caps: c.release()
             writer.release()
 
             st.success("Fertig! Overlay & Zeiten erzeugt.")
