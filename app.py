@@ -1,4 +1,9 @@
-import os, io, tempfile, time
+# app.py
+import os
+import io
+import tempfile
+import time
+
 import cv2
 import numpy as np
 import streamlit as st
@@ -69,7 +74,10 @@ def trim_clip(src_path, dst_path, t0, t1):
     # lazy import (schnelleres Deployment)
     from moviepy.editor import VideoFileClip
     with VideoFileClip(src_path) as clip:
-        sub = clip.subclip(max(t0, 0), max(t1, 0))
+        # Grenzen absichern
+        start = max(0.0, float(t0))
+        end = max(start, float(t1))
+        sub = clip.subclip(start, end)
         sub.write_videofile(
             dst_path, codec="libx264", audio=False, fps=clip.fps,
             verbose=False, logger=None
@@ -78,7 +86,7 @@ def trim_clip(src_path, dst_path, t0, t1):
 
 def detect_times(video_path, entry_line, exit_line, model):
     """YOLOv8 + BYTETRACK. Wenn Tracker-Lib fehlt, werfen wir eine ImportError mit Hinweis."""
-    # Prüfe, ob lapx (oder lap) verfügbar ist – benötigt vom Ultralyics-Tracker.
+    # Prüfe, ob lapx (oder lap) verfügbar ist – benötigt vom Ultralytics-Tracker.
     try:
         import lapx  # noqa: F401
     except Exception:
@@ -102,11 +110,12 @@ def detect_times(video_path, entry_line, exit_line, model):
     )
     frame_i = 0
     for r in stream:
-        if r.orig_shape is not None:
+        if getattr(r, "orig_shape", None) is not None:
             oh, ow = r.orig_shape
         else:
             oh, ow = first.shape[:2]
-        scale = width_ref / ow
+        scale = width_ref / float(ow)
+
         if r.boxes is not None and hasattr(r.boxes, "id") and r.boxes.id is not None:
             ids = r.boxes.id.cpu().numpy().astype(int)
             xyxys = r.boxes.xyxy.cpu().numpy()
@@ -130,6 +139,13 @@ def detect_times(video_path, entry_line, exit_line, model):
             valid.append((tid, t["entry"], t["exit"], t["exit"] - t["entry"]))
     valid.sort(key=lambda x: x[3])
     return valid, fps, first
+
+
+# ===== Pillow Resampling (Pillow >= 10 kompatibel) =====
+try:
+    RESAMPLE = Image.Resampling.BILINEAR  # Pillow >= 10
+except Exception:
+    RESAMPLE = Image.BILINEAR             # Fallback für ältere Versionen
 
 
 # =================== UI ===================
@@ -196,7 +212,10 @@ if paths:
 
     canvas_w = min(640, bg_img.width)
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
-    bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR)
+    bg_canvas = bg_img.resize((canvas_w, canvas_h), RESAMPLE)
+
+    # Für Canvas als NumPy-Array (robuster mit verschiedenen Versionen)
+    bg_np = np.array(bg_canvas)
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
@@ -204,7 +223,7 @@ if paths:
     with c1:
         st.markdown("**Einfahrt-Linie**")
         entry_canvas = st_canvas(
-            background_image=bg_canvas.copy(),  # wichtige Kopie
+            background_image=bg_np.copy(),  # NumPy statt PIL
             background_color=None,
             height=canvas_h,
             width=canvas_w,
@@ -219,7 +238,7 @@ if paths:
     with c2:
         st.markdown("**Ausfahrt-Linie**")
         exit_canvas = st_canvas(
-            background_image=bg_canvas.copy(),   # wichtige Kopie
+            background_image=bg_np.copy(),   # NumPy statt PIL
             background_color=None,
             height=canvas_h,
             width=canvas_w,
@@ -311,7 +330,8 @@ if paths:
                 alphas = [1.0, alpha_top, alpha_top]
 
             out_path = os.path.join(tempfile.gettempdir(), "overlay.mp4")
-            writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), out_fps, (w, h))
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(out_path, fourcc, out_fps, (w, h))
 
             # erstes Frame
             init_frames = [ref]
@@ -345,9 +365,10 @@ if paths:
 
             st.success("Fertig! Overlay & Zeiten erzeugt.")
             st.video(out_path)
-            st.download_button(
-                "Overlay-Video herunterladen",
-                data=open(out_path, "rb").read(),
-                file_name="overlay.mp4",
-                mime="video/mp4"
-            )
+            with open(out_path, "rb") as f:
+                st.download_button(
+                    "Overlay-Video herunterladen",
+                    data=f.read(),
+                    file_name="overlay.mp4",
+                    mime="video/mp4"
+                )
