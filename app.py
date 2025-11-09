@@ -165,7 +165,7 @@ if paths:
     )
 
     # Preview zeigen (hilft beim Debuggen) + Canvas-Bild vorbereiten
-    first_frame = load_first_frame(paths[st.session_state.ref_idx], max_w=1280)
+    first_frame = load_first_frame(paths[st.session_state.ref_idx], max_w=960)
     if first_frame is None:
         st.error("Konnte ersten Frame nicht laden.")
         st.stop()
