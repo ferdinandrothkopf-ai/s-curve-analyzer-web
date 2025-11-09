@@ -1,18 +1,11 @@
-streamlit==1.37.1
-
-Pillow==10.4.0
-
-# NumPy < 2, damit cv2 sauber importiert
-numpy<2
-opencv-python-headless==4.9.0.80
-
-# Ultralytics + PyTorch CPU (Versionen passen zu Python 3.10/3.11)
+streamlit==1.33.0
+streamlit-drawable-canvas==0.9.3
 ultralytics==8.2.103
 torch==2.2.2
 torchvision==0.17.2
-
-# UI / Video
-streamlit-drawable-canvas==0.9.3
+numpy<2
+opencv-python-headless==4.9.0.80
 moviepy==1.0.3
 imageio-ffmpeg==0.4.9
 filterpy==1.4.5
+Pillow==10.4.0
