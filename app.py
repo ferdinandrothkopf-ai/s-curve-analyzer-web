@@ -8,6 +8,7 @@ from ultralytics import YOLO
 # Canvas zum Zeichnen
 from streamlit_drawable_canvas import st_canvas
 
+
 # =================== Utils ===================
 def load_first_frame(video_path, max_w=1280):
     cap = cv2.VideoCapture(video_path)
@@ -21,14 +22,17 @@ def load_first_frame(video_path, max_w=1280):
         frame = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
     return frame
 
+
 def center_of_box(xyxy):
     x1, y1, x2, y2 = xyxy
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
 
 def seg_intersection(p1, p2, q1, q2):
     def ccw(a, b, c):
         return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
     return (ccw(p1, q1, q2) != ccw(p2, q1, q2)) and (ccw(p1, p2, q1) != ccw(p1, p2, q2))
+
 
 def alpha_blend(frames, alphas):
     out = np.zeros_like(frames[0], dtype=np.float32)
@@ -36,12 +40,14 @@ def alpha_blend(frames, alphas):
         out += f.astype(np.float32) * a
     return np.clip(out, 0, 255).astype(np.uint8)
 
+
 def resize_to_width(frame, width):
     h, w = frame.shape[:2]
     if w == width:
         return frame
     s = width / w
     return cv2.resize(frame, (width, int(h * s)), interpolation=cv2.INTER_AREA)
+
 
 def line_from_canvas(json_data):
     """Extrahiere eine Linie (zwei Punkte) aus dem Canvas-JSON."""
@@ -58,24 +64,27 @@ def line_from_canvas(json_data):
             return ((mx, my), (lx, ly))
     return None
 
+
 def trim_clip(src_path, dst_path, t0, t1):
     # lazy import (schnelleres Deployment)
     from moviepy.editor import VideoFileClip
     with VideoFileClip(src_path) as clip:
         sub = clip.subclip(max(t0, 0), max(t1, 0))
-        sub.write_videofile(dst_path, codec="libx264", audio=False,
-                            fps=clip.fps, verbose=False, logger=None)
+        sub.write_videofile(
+            dst_path, codec="libx264", audio=False, fps=clip.fps,
+            verbose=False, logger=None
+        )
+
 
 def detect_times(video_path, entry_line, exit_line, model):
-    """YOLOv8 + BYTETRACK. Wenn Tracker-Lib fehlt, werfen wir eine ImportError."""
-    # Prüfe, ob tracker-Module für ultralytics verfügbar sind (lap/lapx)
+    """YOLOv8 + BYTETRACK. Wenn Tracker-Lib fehlt, werfen wir eine ImportError mit Hinweis."""
+    # Prüfe, ob lapx (oder lap) verfügbar ist – benötigt vom Ultralyics-Tracker.
     try:
         import lapx  # noqa: F401
     except Exception:
-        # ultralytics lädt selbst lap/lapx; wir warnen explizit, wenn es fehlt
         raise ImportError(
             "Tracker-Abhängigkeit fehlt (lap/lapx). "
-            "Füge 'lapx==0.5.6' zu requirements.txt hinzu."
+            "Bitte füge 'lapx==0.5.6' zu requirements.txt hinzu bzw. installiere es."
         )
 
     timings, last_centers = {}, {}
@@ -122,6 +131,7 @@ def detect_times(video_path, entry_line, exit_line, model):
     valid.sort(key=lambda x: x[3])
     return valid, fps, first
 
+
 # =================== UI ===================
 st.set_page_config(page_title="S-Curve Analyzer (Web)", layout="wide")
 st.title("🏎️ S-Curve Analyzer – Linien **ziehen** auf dem Vorschaubild")
@@ -138,16 +148,18 @@ if "tmp_paths" not in st.session_state: st.session_state.tmp_paths = []
 if "names"     not in st.session_state: st.session_state.names = []
 if "ref_idx"   not in st.session_state: st.session_state.ref_idx = 0
 
-uploaded = st.file_uploader("Clips (MP4/MOV)", type=["mp4","mov","m4v"], accept_multiple_files=True)
+uploaded = st.file_uploader("Clips (MP4/MOV)", type=["mp4", "mov", "m4v"], accept_multiple_files=True)
 alpha_top = st.slider("Deckkraft obere Ebenen", 0.3, 0.8, 0.5, 0.05)
-out_width = st.select_slider("Exportbreite", options=[854,960,1280,1600,1920], value=1280)
+out_width = st.select_slider("Exportbreite", options=[854, 960, 1280, 1600, 1920], value=1280)
 
 # Upload → Tempfiles
 if uploaded:
     # Alte Temps aufräumen
     for p in st.session_state.tmp_paths:
-        try: os.remove(p)
-        except Exception: pass
+        try:
+            os.remove(p)
+        except Exception:
+            pass
     st.session_state.tmp_paths, st.session_state.names = [], []
     for uf in uploaded[:3]:
         suffix = os.path.splitext(uf.name)[1].lower()
@@ -167,22 +179,24 @@ if paths:
         index=st.session_state.ref_idx, format_func=lambda i: names[i]
     )
 
+    # 1. Frame des Referenz-Clips laden
     first_bgr = load_first_frame(paths[st.session_state.ref_idx], max_w=1280)
     if first_bgr is None:
-        st.error("Konnte ersten Frame nicht laden."); st.stop()
+        st.error("Konnte ersten Frame nicht laden.")
+        st.stop()
 
-    # Hintergrund fürs Canvas: **PIL RGB**, sauber skaliert
+    # Vorschau anzeigen (NumPy RGB)
+    st.markdown("### Vorschau-Frame")
+    preview = cv2.cvtColor(first_bgr, cv2.COLOR_BGR2RGB)
+    st.image(preview, caption="Referenz-Frame", width=min(960, preview.shape[1]))
+
+    # Canvas-Hintergrund als PIL RGB erzeugen & skalieren
     first_rgb = cv2.cvtColor(first_bgr, cv2.COLOR_BGR2RGB)
     bg_img = Image.fromarray(first_rgb).convert("RGB")
 
-    # Canvas-Größe (gleiches Seitenverhältnis, moderat breit)
     canvas_w = min(640, bg_img.width)
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
     bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR)
-
-    st.markdown("### Vorschau-Frame")
-    preview = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)  # NumPy RGB
-    st.image(preview, caption="Referenz-Frame", width=min(960, preview.shape[1]))
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
@@ -190,11 +204,11 @@ if paths:
     with c1:
         st.markdown("**Einfahrt-Linie**")
         entry_canvas = st_canvas(
-            background_image=bg_canvas,      # **PIL.Image** !
+            background_image=bg_canvas.copy(),  # wichtige Kopie
             background_color=None,
             height=canvas_h,
             width=canvas_w,
-            drawing_mode="line",             # ← Linie ziehen
+            drawing_mode="line",                # Linie ziehen (Klick & Drag)
             stroke_width=4,
             stroke_color="#00ff00",
             update_streamlit=True,
@@ -205,7 +219,7 @@ if paths:
     with c2:
         st.markdown("**Ausfahrt-Linie**")
         exit_canvas = st_canvas(
-            background_image=bg_canvas,
+            background_image=bg_canvas.copy(),   # wichtige Kopie
             background_color=None,
             height=canvas_h,
             width=canvas_w,
@@ -225,6 +239,7 @@ if paths:
     if not ready:
         st.info("⚠️ Bitte in **beiden** Canvases je **eine Linie ziehen** (Start ↔ Ende).")
 
+    # ------------------- Analyse -------------------
     if st.button("Analysieren", type="primary", disabled=not ready):
         model = YOLO("yolov8n.pt")
         results_table, trimmed = [], []
@@ -252,6 +267,7 @@ if paths:
                     trim_clip(vpath, outp, t_in - pad, t_out + pad)
                     trimmed.append((outp, best_id, dt))
         except ImportError as e:
+            # ByteTrack/LAPX fehlt → klare Meldung
             st.error(str(e))
             st.stop()
 
@@ -259,13 +275,18 @@ if paths:
         st.dataframe(results_table, use_container_width=True)
 
         if not trimmed:
-            st.warning("Keine gültigen Sektorzeiten erkannt."); st.stop()
+            st.warning("Keine gültigen Sektorzeiten erkannt.")
+            st.stop()
 
+        # ------------------- Overlay -------------------
         st.markdown("### Overlay erstellen (bis 3 Clips)")
         names_pretty = [f"{os.path.basename(p)} (ID {int(vid)}, {d:.3f}s)" for (p, vid, d) in trimmed]
-        sel_idx = st.multiselect("Wähle Clips", options=list(range(len(trimmed))),
-                                 format_func=lambda i: names_pretty[i],
-                                 default=list(range(min(3, len(trimmed)))))
+        sel_idx = st.multiselect(
+            "Wähle Clips",
+            options=list(range(len(trimmed))),
+            format_func=lambda i: names_pretty[i],
+            default=list(range(min(3, len(trimmed))))
+        )
 
         if sel_idx:
             chosen = [trimmed[i] for i in sel_idx][:3]
@@ -275,14 +296,19 @@ if paths:
 
             ok, ref = caps[0].read()
             if not ok:
-                for c in caps: c.release()
-                st.error("Fehler beim Overlay."); st.stop()
+                for c in caps:
+                    c.release()
+                st.error("Fehler beim Overlay.")
+                st.stop()
             ref = resize_to_width(ref, out_width)
             h, w = ref.shape[:2]
 
-            if len(chosen) == 1: alphas = [1.0]
-            elif len(chosen) == 2: alphas = [1.0, alpha_top]
-            else: alphas = [1.0, alpha_top, alpha_top]
+            if len(chosen) == 1:
+                alphas = [1.0]
+            elif len(chosen) == 2:
+                alphas = [1.0, alpha_top]
+            else:
+                alphas = [1.0, alpha_top, alpha_top]
 
             out_path = os.path.join(tempfile.gettempdir(), "overlay.mp4")
             writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), out_fps, (w, h))
@@ -291,10 +317,12 @@ if paths:
             init_frames = [ref]
             for i in range(1, len(caps)):
                 ok, fr = caps[i].read()
-                if not ok: fr = np.zeros_like(ref)
-                else:     fr = resize_to_width(fr, out_width)
+                if not ok:
+                    fr = np.zeros_like(ref)
+                else:
+                    fr = resize_to_width(fr, out_width)
                 init_frames.append(fr)
-            writer.write(alpha_blend(init_frames, alphas[:len(init_frames)]))
+            writer.write(alpha_blend(init_frames, alphas[: len(init_frames)]))
 
             # restliche Frames
             while True:
@@ -305,16 +333,21 @@ if paths:
                         ended += 1
                         continue
                     frames.append(resize_to_width(fr, out_width))
-                if ended == len(caps): break
+                if ended == len(caps):
+                    break
                 while len(frames) < len(caps):
                     frames.append(np.zeros((h, w, 3), dtype=np.uint8))
-                writer.write(alpha_blend(frames, alphas[:len(frames)]))
+                writer.write(alpha_blend(frames, alphas[: len(frames)]))
 
-            for c in caps: c.release()
+            for c in caps:
+                c.release()
             writer.release()
 
             st.success("Fertig! Overlay & Zeiten erzeugt.")
             st.video(out_path)
-            st.download_button("Overlay-Video herunterladen",
-                               data=open(out_path, "rb").read(),
-                               file_name="overlay.mp4", mime="video/mp4")
+            st.download_button(
+                "Overlay-Video herunterladen",
+                data=open(out_path, "rb").read(),
+                file_name="overlay.mp4",
+                mime="video/mp4"
+            )
