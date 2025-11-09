@@ -181,7 +181,8 @@ if paths:
     bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR)
 
     st.markdown("### Vorschau-Frame")
-    st.image(bg_img, caption="Referenz-Frame", use_column_width=True)
+    preview = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)  # NumPy RGB
+    st.image(preview, caption="Referenz-Frame", width=min(960, preview.shape[1]))
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
