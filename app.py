@@ -52,7 +52,7 @@ with c2:
     )
 Warum das hilft
 
-Das Bild kommt als „frische“ PNG-Bytequelle (statt eines evtl. gecachten PIL-Objekts).
+Das Bild kommt als frische PNG-Bytequelle (statt eines evtl. gecachten PIL-Objekts).
 
 Jede Canvas hat eigene Image-Instanz → kein internes Überschreiben.
 
