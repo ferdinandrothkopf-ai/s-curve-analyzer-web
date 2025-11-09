@@ -174,7 +174,7 @@ if paths:
     bg_img = Image.fromarray(img_rgb).convert("RGB")
 
     st.markdown("**Vorschau-Frame:**")
-    st.image(bg_img, use_container_width=False)
+    st.image(bg_img, use_column_width=False)
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
