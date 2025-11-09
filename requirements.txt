@@ -1,0 +1,8 @@
+streamlit
+ultralytics
+opencv-python-headless
+numpy
+filterpy
+streamlit-drawable-canvas
+moviepy
+imageio-ffmpeg
