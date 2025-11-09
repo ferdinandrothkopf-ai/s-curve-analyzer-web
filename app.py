@@ -3,6 +3,7 @@ from ultralytics import YOLO
 from streamlit_drawable_canvas import st_canvas
 from moviepy.editor import VideoFileClip
 import imageio_ffmpeg
+from PIL import Image
 
 # ----------------- Utils -----------------
 def load_first_frame(video_path, max_w=1280):
