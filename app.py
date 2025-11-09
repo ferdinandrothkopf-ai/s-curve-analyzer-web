@@ -12,7 +12,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from streamlit_plotly_events import plotly_events
 
-
 # ============ Utils ============
 def load_first_frame(video_path, max_w=1280):
     cap = cv2.VideoCapture(video_path)
@@ -81,17 +80,16 @@ class SimpleTracker:
                 self.next_id += 1
         return [(tid, t["box"]) for tid, t in self.tracks.items()]
 
-
 # ============ Plotly-Figur (px.imshow) mit Linien ============
 def make_fig_with_lines(img_rgb: np.ndarray,
                         entry_pts: List[Tuple[float, float]],
                         exit_pts: List[Tuple[float, float]],
                         width_px: int = 900) -> go.Figure:
-    """Robustes Rendering mit px.imshow (zeigt Bild zuverlässig) und optionalen Linien."""
+    """Robustes Rendering mit px.imshow und optionalen Linien."""
     h, w = img_rgb.shape[:2]
     fig = px.imshow(img_rgb, binary_format="png", origin="upper")
     fig.update_xaxes(visible=False, range=[0, w])
-    fig.update_yaxes(visible=False, range=[h, 0])  # invertierte y-Achse (oben=0)
+    fig.update_yaxes(visible=False, range=[h, 0])  # invertierte y-Achse
 
     shapes = []
     if len(entry_pts) == 2:
@@ -109,6 +107,28 @@ def make_fig_with_lines(img_rgb: np.ndarray,
     fig.update_layout(width=width, height=height, margin=dict(l=0, r=0, t=0, b=0), shapes=shapes)
     return fig
 
+# ============ Kompatibler Click-Capture ============
+def capture_plotly_clicks(fig: go.Figure, fallback_width: int, fallback_height: int, key: str):
+    """Fängt Klick-Events ein und unterstützt ältere/neue Signaturen von streamlit-plotly-events."""
+    try:
+        # Neuere Version mit override_*
+        return plotly_events(
+            fig,
+            click_event=True,
+            hover_event=False,
+            select_event=False,
+            override_height=fig.layout.height or fallback_height,
+            override_width=fig.layout.width or fallback_width,
+            key=key,
+        )
+    except TypeError:
+        # Ältere Version: ohne override_* und ohne key
+        try:
+            return plotly_events(fig, click_event=True, hover_event=False, select_event=False)
+        except Exception:
+            # Fallback: normal rendern, aber keine Events
+            st.plotly_chart(fig, use_container_width=False)
+            return []
 
 # ============ App ============
 st.set_page_config(page_title="Sektorzeiten – Klicklinien", layout="wide")
@@ -151,17 +171,8 @@ if uploaded:
     # Figur rendern
     fig = make_fig_with_lines(first_rgb, st.session_state.entry_pts, st.session_state.exit_pts, width_px=900)
 
-    # Klicks einsammeln (rendert die Figur auch)
-    events = plotly_events(
-        fig,
-        click_event=True,
-        hover_event=False,
-        select_event=False,
-        override_height=fig.layout.height or h,
-        override_width=fig.layout.width or min(900, w),
-        key="click_capture",
-        config={"displayModeBar": True, "scrollZoom": True}
-    )
+    # Klicks einsammeln (robust für alte/neue Versionen)
+    events = capture_plotly_clicks(fig, fallback_width=min(900, w), fallback_height=int(h * (min(900, w)/w)), key="click_capture")
 
     # Klick übernehmen
     if events:
@@ -172,7 +183,7 @@ if uploaded:
             st.session_state.exit_pts.append((x, y))
         # Neu zeichnen, damit die Linie sofort sichtbar ist
         fig = make_fig_with_lines(first_rgb, st.session_state.entry_pts, st.session_state.exit_pts, width_px=900)
-        st.plotly_chart(fig, use_container_width=False, config={"displayModeBar": True})
+        st.plotly_chart(fig, use_container_width=False)
 
     ready = (len(st.session_state.entry_pts) == 2 and len(st.session_state.exit_pts) == 2)
     if not ready:
