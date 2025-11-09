@@ -174,45 +174,52 @@ if paths:
     bg_img = Image.fromarray(img_rgb).convert("RGB")
 
     st.markdown("**Vorschau-Frame:**")
-    st.image(bg_img)  # Preview bleibt in Originalskalierung okay
+    st.image(bg_img)  # Vorschau ok
 
-    # --- NEU: Canvas-Größe an Spaltenbreite anpassen ---
-    # sichere Breite pro Spalte (faustwert); kannst du anpassen:
-    canvas_target_w = min(600, bg_img.width)
-    canvas_target_h = int(bg_img.height * canvas_target_w / bg_img.width)
-    bg_canvas = bg_img.resize((canvas_target_w, canvas_target_h))  # PIL-Image
+    # Canvas-Größe robust auf Spaltenbreite bringen
+    canvas_w = min(600, bg_img.width)       # kannst du auf 512–720 variieren
+    canvas_h = int(bg_img.height * canvas_w / bg_img.width)
+    bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR)
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
 
-    # links: Einfahrt
+    # Links: Einfahrt (eigene Image-Instanz!)
     with c1:
         entry = st_canvas(
             fill_color="rgba(0,255,0,0.1)",
             stroke_width=3,
             stroke_color="#00ff00",
-            background_image=bg_canvas,         # <-- das skalierte PIL-Bild
-            background_color="#00000000",       # transparent
-            update_streamlit=True,
-            height=int(canvas_target_h),
-            width=int(canvas_target_w),
+            background_image=bg_canvas.copy(),     # <— eigenes Objekt
+            background_color="#00000000",          # transparent
+            update_streamlit=True,                 # Bild-Init erzwingen
+            height=int(canvas_h),
+            width=int(canvas_w),
             drawing_mode="line",
             key="entry_canvas",
         )
 
-    # rechts: Ausfahrt
+    # Rechts: Ausfahrt (eigene Image-Instanz!)
     with c2:
         exitc = st_canvas(
             fill_color="rgba(255,0,0,0.1)",
             stroke_width=3,
             stroke_color="#ff0000",
-            background_image=bg_canvas,         # <-- das skalierte PIL-Bild
+            background_image=bg_canvas.copy(),     # <— eigenes Objekt
             background_color="#00000000",
             update_streamlit=True,
-            height=int(canvas_target_h),
-            width=int(canvas_target_w),
+            height=int(canvas_h),
+            width=int(canvas_w),
             drawing_mode="line",
             key="exit_canvas",
+        )
+
+    # Falls das Bild trotzdem nicht sichtbar ist (seltene FabricJS-Race-Condition):
+    if (entry.image_data is None and entry.json_data is None) or \
+       (exitc.image_data is None and exitc.json_data is None):
+        st.info(
+            "Wenn die Hintergründe weiß bleiben: einmal oben auf **Rerun** klicken "
+            "oder die Canvas-Breite in den Codezeilen (`canvas_w`) kleiner setzen (z. B. 512)."
         )
 
     if st.button("Analysieren", type="primary"):
