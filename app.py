@@ -12,6 +12,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from streamlit_plotly_events import plotly_events
 
+
 # ===================== Utils =====================
 
 def load_first_frame(video_path, max_w=1280):
@@ -37,57 +38,97 @@ def seg_intersection(p1, p2, q1, q2):
         return (c[1]-a[1])*(b[0]-a[0]) > (b[1]-a[1])*(c[0]-a[0])
     return (ccw(p1,q1,q2) != ccw(p2,q1,q2)) and (ccw(p1,p2,q1) != ccw(p1,p2,q2))
 
-def simple_iou(a, b):
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    x1, y1 = max(ax1,bx1), max(ay1,by1)
-    x2, y2 = min(ax2,bx2), min(ay2,by2)
-    iw, ih = max(0, x2-x1), max(0, y2-y1)
-    inter = iw*ih
-    area_a = (ax2-ax1)*(ay2-ay1)
-    area_b = (bx2-bx1)*(by2-by1)
-    return inter / (area_a + area_b - inter + 1e-6)
 
-class SimpleTracker:
-    """Sehr einfacher IoU-Tracker (keine Fremdlibs)."""
-    def __init__(self, iou_thresh=0.3, max_age=20):
-        self.iou_thresh = iou_thresh
+# ===================== Besserer leichter Tracker =====================
+# Greedy Matching mit kombiniertem Score aus IoU und normierter Mittelpunkt-Distanz.
+# Stabilere ID-Haltung als der ganz einfache IoU-only-Tracker.
+class LightTracker:
+    def __init__(self, iou_w=0.6, dist_w=0.4, dist_gate=0.6, score_gate=0.25, max_age=15):
+        self.iou_w = iou_w
+        self.dist_w = dist_w
+        self.dist_gate = dist_gate        # 0..1 (1 = sehr weit ok)
+        self.score_gate = score_gate      # minimaler Kombi-Score
         self.max_age = max_age
         self.next_id = 1
-        self.tracks = {}  # id -> {"box":..., "age":0, "trail":[(x,y), ...]}
+        # id -> dict(box, age, last_center, vel, trail)
+        self.tracks = {}
 
-    def update(self, detections):
-        assigned = set()
+    @staticmethod
+    def iou(a, b):
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        x1, y1 = max(ax1, bx1), max(ay1, by1)
+        x2, y2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0, x2-x1), max(0, y2-y1)
+        inter = iw*ih
+        area_a = (ax2-ax1)*(ay2-ay1)
+        area_b = (bx2-bx1)*(by2-by1)
+        return inter / (area_a + area_b - inter + 1e-6)
+
+    @staticmethod
+    def norm_center_dist(a, b, img_w, img_h):
+        ax, ay = center_of_box(a)
+        bx, by = center_of_box(b)
+        # normiert auf Bilddiagonale
+        d = np.hypot(ax-bx, ay-by) / (np.hypot(img_w, img_h) + 1e-6)
+        # clip auf [0,1]
+        return float(np.clip(d, 0.0, 1.0))
+
+    def update(self, detections, img_w, img_h):
+        # detections: list of (x1,y1,x2,y2)
+        assigned_dets = set()
+
+        # 1) existierende Tracks matchen
         for tid, t in list(self.tracks.items()):
-            best_iou, best_j = 0.0, -1
+            best_score, best_j = -1.0, -1
             for j, d in enumerate(detections):
-                if j in assigned: continue
-                i = simple_iou(t["box"], d)
-                if i > best_iou: best_iou, best_j = i, j
-            if best_iou >= self.iou_thresh:
-                self.tracks[tid]["box"] = detections[best_j]
-                self.tracks[tid]["age"] = 0
-                assigned.add(best_j)
+                if j in assigned_dets:
+                    continue
+                iou = self.iou(t["box"], d)
+                nd  = 1.0 - self.norm_center_dist(t["box"], d, img_w, img_h)  # 1=nah, 0=weit
+                # harte Distanz-Gate
+                if (1.0 - nd) > self.dist_gate:
+                    continue
+                score = self.iou_w * iou + self.dist_w * nd
+                if score > best_score:
+                    best_score, best_j = score, j
+            if best_j >= 0 and best_score >= self.score_gate:
+                # Match
+                new_box = detections[best_j]
+                cx_old, cy_old = center_of_box(t["box"])
+                cx_new, cy_new = center_of_box(new_box)
+                vel = (cx_new - cx_old, cy_new - cy_old)
+                t.update({"box": new_box, "age": 0, "last_center": (cx_new, cy_new), "vel": vel})
+                trail = t.get("trail", [])
+                trail.append((int(cx_new), int(cy_new)))
+                if len(trail) > 50: trail = trail[-50:]
+                t["trail"] = trail
+                assigned_dets.add(best_j)
             else:
-                t["age"] += 1
+                # nicht gematcht -> altern lassen
+                t["age"] = t.get("age", 0) + 1
                 if t["age"] > self.max_age:
                     del self.tracks[tid]
 
+        # 2) neue Tracks anlegen
         for j, d in enumerate(detections):
-            if j not in assigned:
-                self.tracks[self.next_id] = {"box": d, "age": 0, "trail": []}
-                self.next_id += 1
+            if j in assigned_dets:
+                continue
+            cx, cy = center_of_box(d)
+            self.tracks[self.next_id] = {
+                "box": d, "age": 0, "last_center": (cx, cy), "vel": (0.0, 0.0), "trail": [(int(cx), int(cy))]
+            }
+            self.next_id += 1
 
-        out = []
-        for tid, t in self.tracks.items():
-            out.append((tid, t["box"]))
-        return out
+        # 3) Ausgabe
+        return [(tid, t["box"]) for tid, t in self.tracks.items()]
+
 
 # -------- Plotly Bild + Linien (für die Punktwahl) --------
 def make_fig_with_lines(img_rgb: np.ndarray,
                         entry_pts: List[Tuple[float,float]],
                         exit_pts:  List[Tuple[float,float]],
-                        width_px: int = 900) -> go.Figure:
+                        width_px: int = 1000) -> go.Figure:
     h, w = img_rgb.shape[:2]
     fig = px.imshow(img_rgb, binary_format="png", origin="upper")
     fig.update_xaxes(visible=False, range=[0, w])
@@ -120,10 +161,11 @@ def capture_plotly_clicks(fig, fallback_width, fallback_height, key):
             st.plotly_chart(fig, use_container_width=False)
             return []
 
+
 # ===================== App =====================
 
-st.set_page_config(page_title="Sektorzeiten – Live", layout="wide")
-st.title("🏁 Sektorzeiten aus Video — Live-Anzeige")
+st.set_page_config(page_title="Sektorzeiten – Live Tracking", layout="wide")
+st.title("🏁 Sektorzeiten aus Video — Live-Tracking")
 
 st.caption("1) **Video hochladen** → 2) Im ersten Frame **2 Punkte** für *Einfahrt* (grün) und **2 Punkte** für *Ausfahrt* (rot) → 3) **Analysieren** & Live-Tracking.")
 
@@ -147,7 +189,8 @@ if uploaded:
     first_rgb = bgr2rgb(first_bgr)
     h, w = first_rgb.shape[:2]
 
-    c1, c2, c3 = st.columns([1,1,2])
+    # Linien setzen
+    c1, c2, _ = st.columns([1,1,2])
     with c1:
         st.session_state.mode = st.radio("Modus", ["Einfahrt","Ausfahrt"],
                                          horizontal=True,
@@ -176,8 +219,7 @@ if uploaded:
 
     # ---------- Analyse + Live Anzeige ----------
     st.markdown("---")
-    live = st.checkbox("Live anzeigen (langsamer)", value=True)
-    skip = st.slider("Jede n-te Frame analysieren (Performance)", min_value=1, max_value=5, value=1, help="1 = jedes Frame, 2 = jedes zweite, ...")
+    live = st.checkbox("Live anzeigen (kann langsamer sein)", value=True)
     conf = st.slider("YOLO Konfidenz", 0.1, 0.8, 0.25, 0.05)
 
     if st.button("Analysieren", type="primary", disabled=not ready):
@@ -185,14 +227,19 @@ if uploaded:
         exit_line  = (st.session_state.exit_pts[0],  st.session_state.exit_pts[1])
 
         model = YOLO("yolov8n.pt")
-        tracker = SimpleTracker(iou_thresh=0.3, max_age=20)
+        tracker = LightTracker(iou_w=0.6, dist_w=0.4, dist_gate=0.6, score_gate=0.25, max_age=12)
 
         timings, last_centers = {}, {}
+        unique_ids_seen = set()
+        ids_with_sector = set()
+
         cap = cv2.VideoCapture(video_path)
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
+        # Live-Widgets
         img_placeholder = st.empty()
+        kpi1, kpi2, kpi3 = st.columns(3)
         prog = st.progress(0)
         info = st.empty()
 
@@ -201,35 +248,39 @@ if uploaded:
             ok, frame = cap.read()
             if not ok: break
 
-            if frame_i % skip != 0:
-                frame_i += 1
-                continue
-
-            # YOLO: nur Fahrzeuge
+            # YOLO: nur Fahrzeuge (car, moto, bus, truck)
             yres = model.predict(frame, classes=[2,3,5,7], conf=conf, imgsz=960, verbose=False)
             dets = []
             if yres and len(yres)>0 and yres[0].boxes is not None:
                 for b in yres[0].boxes.xyxy.cpu().numpy():
                     dets.append(tuple(b.tolist()))
 
-            tracks = tracker.update(dets)
+            tracks = tracker.update(dets, img_w=frame.shape[1], img_h=frame.shape[0])
 
-            # Visualisierung vorbereiten
+            # Visualisierung
             vis = frame.copy()
-            # Linien einzeichnen
+            # Linien
             cv2.line(vis, tuple(map(int, entry_line[0])), tuple(map(int, entry_line[1])), (0,255,0), 3)
             cv2.line(vis, tuple(map(int, exit_line[0])),  tuple(map(int, exit_line[1])),  (0,0,255), 3)
 
-            # Tracks zeichnen, Schnittpunkte loggen
+            # Tracks rendern & Schnittpunkte prüfen
             for tid, box in tracks:
+                unique_ids_seen.add(tid)
+
                 x1,y1,x2,y2 = map(int, box)
                 cx, cy = map(int, center_of_box(box))
 
-                # Box & Mittelpunkt
+                # schicke Overlays: Box + ID + Symbol + Trail
                 cv2.rectangle(vis, (x1,y1), (x2,y2), (255,255,0), 2)
                 cv2.circle(vis, (cx,cy), 6, (0,255,255), -1)
                 cv2.putText(vis, f"ID {tid}", (x1, max(0,y1-8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
 
+                # Trails (Bewegungsspur), falls vorhanden
+                tr = tracker.tracks[tid].get("trail", [])
+                for k in range(1, len(tr)):
+                    cv2.line(vis, tr[k-1], tr[k], (255,255,0), 2)
+
+                # Crossing-Logik
                 p2 = (float(cx), float(cy))
                 p1 = last_centers.get(tid, p2)
                 if tid not in timings:
@@ -237,13 +288,25 @@ if uploaded:
 
                 if timings[tid]["entry"] is None and seg_intersection(p1, p2, entry_line[0], entry_line[1]):
                     timings[tid]["entry"] = frame_i / fps
-                    cv2.circle(vis, (cx, cy), 10, (0, 255, 0), 3)  # markiere Crossing
+                    cv2.circle(vis, (cx, cy), 10, (0,255,0), 3)
 
                 if timings[tid]["exit"] is None and seg_intersection(p1, p2, exit_line[0], exit_line[1]):
                     timings[tid]["exit"] = frame_i / fps
-                    cv2.circle(vis, (cx, cy), 10, (0, 0, 255), 3)
+                    cv2.circle(vis, (cx, cy), 10, (0,0,255), 3)
+                    if timings[tid]["entry"] is not None:
+                        ids_with_sector.add(tid)
 
                 last_centers[tid] = p2
+
+            # sanftes Overlay (leichte Abdunklung + Zeichnung schärfer)
+            overlay = vis.copy()
+            cv2.rectangle(overlay, (0,0), (vis.shape[1], 40), (0,0,0), -1)
+            vis = cv2.addWeighted(vis, 0.92, overlay, 0.08, 0)
+
+            # KPIs aktualisieren
+            kpi1.metric("Aktive Tracks", len(tracks))
+            kpi2.metric("Verschiedene Fahrzeuge gesehen", len(unique_ids_seen))
+            kpi3.metric("Mit Sektorzeit", len(ids_with_sector))
 
             # Live zeigen
             if live:
@@ -252,7 +315,7 @@ if uploaded:
             # Fortschritt
             if total > 0:
                 prog.progress(min(1.0, frame_i / float(total)))
-            info.write(f"Frame {frame_i} / {total}  ·  aktive Tracks: {len(tracks)}")
+            info.write(f"Frame {frame_i} / {total}")
 
             frame_i += 1
 
@@ -272,8 +335,8 @@ if uploaded:
                 })
 
         if not rows:
-            st.warning("Keine gültigen Sektorzeiten erkannt. Versuche andere Linienpositionen oder senke die Konfidenz.")
+            st.warning("Keine gültigen Sektorzeiten erkannt. Probiere niedrigere Konfidenz oder andere Linienpositionen.")
         else:
             rows = sorted(rows, key=lambda r: r["Sektorzeit [s]"])
-            st.success(f"Fertig! {len(rows)} Fahrzeuge mit gültiger Sektorzeit.")
+            st.success(f"Fertig! {len(rows)} Fahrzeuge mit gültiger Sektorzeit.  ·  Insgesamt gesehen: {len(unique_ids_seen)}")
             st.dataframe(rows, use_container_width=True)
