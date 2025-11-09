@@ -61,8 +61,7 @@ class SimpleTracker:
         for tid, t in list(self.tracks.items()):
             best_iou, best_j = 0.0, -1
             for j, d in enumerate(detections):
-                if j in assigned:
-                    continue
+                if j in assigned: continue
                 i = simple_iou(t["box"], d)
                 if i > best_iou:
                     best_iou, best_j = i, j
@@ -92,11 +91,13 @@ def make_fig_with_lines(img_rgb: np.ndarray,
     fig.update_yaxes(visible=False, range=[h, 0])  # invertierte y-Achse
 
     shapes = []
+    # grün (nur anzeigen, wenn 2 Punkte gesetzt)
     if len(entry_pts) == 2:
         shapes.append(dict(type="line",
                            x0=entry_pts[0][0], y0=entry_pts[0][1],
                            x1=entry_pts[1][0], y1=entry_pts[1][1],
                            line=dict(color="lime", width=4)))
+    # rot (nur anzeigen, wenn 2 Punkte gesetzt)
     if len(exit_pts) == 2:
         shapes.append(dict(type="line",
                            x0=exit_pts[0][0], y0=exit_pts[0][1],
@@ -109,9 +110,8 @@ def make_fig_with_lines(img_rgb: np.ndarray,
 
 # ============ Kompatibler Click-Capture ============
 def capture_plotly_clicks(fig: go.Figure, fallback_width: int, fallback_height: int, key: str):
-    """Fängt Klick-Events ein und unterstützt ältere/neue Signaturen von streamlit-plotly-events."""
+    """Fängt Klick-Events ein; unterstützt alte/neue Signaturen von streamlit-plotly-events."""
     try:
-        # Neuere Version mit override_*
         return plotly_events(
             fig,
             click_event=True,
@@ -122,11 +122,9 @@ def capture_plotly_clicks(fig: go.Figure, fallback_width: int, fallback_height: 
             key=key,
         )
     except TypeError:
-        # Ältere Version: ohne override_* und ohne key
         try:
             return plotly_events(fig, click_event=True, hover_event=False, select_event=False)
         except Exception:
-            # Fallback: normal rendern, aber keine Events
             st.plotly_chart(fig, use_container_width=False)
             return []
 
@@ -138,8 +136,8 @@ st.markdown("1) **Video hochladen** → 2) Im ersten Frame **2 Klicks** für *Ei
 
 # Session-State
 if "entry_pts" not in st.session_state: st.session_state.entry_pts = []
-if "exit_pts" not in st.session_state: st.session_state.exit_pts = []
-if "mode" not in st.session_state: st.session_state.mode = "Einfahrt"
+if "exit_pts"  not in st.session_state: st.session_state.exit_pts  = []
+if "mode"      not in st.session_state: st.session_state.mode = "Einfahrt"
 
 uploaded = st.file_uploader("Video (MP4/MOV)", type=["mp4", "mov", "m4v"], accept_multiple_files=False)
 
@@ -171,8 +169,14 @@ if uploaded:
     # Figur rendern
     fig = make_fig_with_lines(first_rgb, st.session_state.entry_pts, st.session_state.exit_pts, width_px=900)
 
-    # Klicks einsammeln (robust für alte/neue Versionen)
-    events = capture_plotly_clicks(fig, fallback_width=min(900, w), fallback_height=int(h * (min(900, w)/w)), key="click_capture")
+    # WICHTIG: eigener key pro Zustand -> alte Events werden verworfen
+    widget_key = f"click_{st.session_state.mode}_{len(st.session_state.entry_pts)}_{len(st.session_state.exit_pts)}"
+    events = capture_plotly_clicks(
+        fig,
+        fallback_width=min(900, w),
+        fallback_height=int(h * (min(900, w) / w)),
+        key=widget_key
+    )
 
     # Klick übernehmen
     if events:
@@ -181,7 +185,7 @@ if uploaded:
             st.session_state.entry_pts.append((x, y))
         elif st.session_state.mode == "Ausfahrt" and len(st.session_state.exit_pts) < 2:
             st.session_state.exit_pts.append((x, y))
-        # Neu zeichnen, damit die Linie sofort sichtbar ist
+        # Neu zeichnen
         fig = make_fig_with_lines(first_rgb, st.session_state.entry_pts, st.session_state.exit_pts, width_px=900)
         st.plotly_chart(fig, use_container_width=False)
 
