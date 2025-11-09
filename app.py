@@ -163,26 +163,24 @@ if paths:
     st.image(bg_img)
 
     # ---------- robuster Canvas-Hintergrund über Data-URL ----------
-    canvas_w = min(600, bg_img.width)             # bei Bedarf 512–720 anpassen
+    # Skalieren + sicherstellen, dass das Bild RGBA ist
+    canvas_w = min(600, bg_img.width)
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
-    bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR)
-
-    buf = io.BytesIO()
-    bg_canvas.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    bg_url = f"data:image/png;base64,{b64}"
-    # ---------------------------------------------------------------
+    bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR).convert("RGBA")
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
 
     with c1:
         entry = st_canvas(
-            fill_color="rgba(0,255,0,0.1)", stroke_width=3, stroke_color="#00ff00",
-            background_image_url=bg_url,
-            background_color="#00000000",
+            fill_color="rgba(0,255,0,0.1)",
+            stroke_width=3,
+            stroke_color="#00ff00",
+            background_image=bg_canvas.copy(),   # <-- PIL Image, eigene Instanz
+            background_color=None,               # wichtig: None statt "#00000000"
             update_streamlit=True,
-            height=int(canvas_h), width=int(canvas_w),
+            height=int(canvas_h),
+            width=int(canvas_w),
             drawing_mode="line",
             key=f"entry_canvas_{st.session_state.ref_idx}",
             display_toolbar=False,
@@ -190,11 +188,14 @@ if paths:
 
     with c2:
         exitc = st_canvas(
-            fill_color="rgba(255,0,0,0.1)", stroke_width=3, stroke_color="#ff0000",
-            background_image_url=bg_url,
-            background_color="#00000000",
+            fill_color="rgba(255,0,0,0.1)",
+            stroke_width=3,
+            stroke_color="#ff0000",
+            background_image=bg_canvas.copy(),   # eigene Instanz
+            background_color=None,
             update_streamlit=True,
-            height=int(canvas_h), width=int(canvas_w),
+            height=int(canvas_h),
+            width=int(canvas_w),
             drawing_mode="line",
             key=f"exit_canvas_{st.session_state.ref_idx}",
             display_toolbar=False,
