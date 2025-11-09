@@ -1,4 +1,7 @@
-import os, io, tempfile, cv2, numpy as np, streamlit as st, time
+import os, io, base64, tempfile, time
+import cv2
+import numpy as np
+import streamlit as st
 from ultralytics import YOLO
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image
@@ -52,8 +55,7 @@ def line_from_canvas(json_data):
     return None
 
 def trim_clip(src_path, dst_path, t0, t1):
-    # lazy import, damit Deploy schneller ist
-    from moviepy.editor import VideoFileClip
+    from moviepy.editor import VideoFileClip  # lazy import
     with VideoFileClip(src_path) as clip:
         sub = clip.subclip(max(t0, 0), max(t1, 0))
         sub.write_videofile(dst_path, codec="libx264", audio=False,
@@ -158,28 +160,29 @@ if paths:
     bg_img  = Image.fromarray(img_rgb).convert("RGB")
 
     st.markdown("**Vorschau-Frame:**")
-    st.image(bg_img)  # kompatibel mit Streamlit 1.33.0
+    st.image(bg_img)
 
-    canvas_w = min(600, bg_img.width)                 # ggf. 512 testen
+    # ---------- robuster Canvas-Hintergrund über Data-URL ----------
+    canvas_w = min(600, bg_img.width)             # bei Bedarf 512–720 anpassen
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
-
-    # -> Statt PIL-Image: als NumPy-Array (RGB) übergeben
     bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR)
-    bg_np = np.array(bg_canvas.convert("RGB"))        # (H, W, 3) uint8
+
+    buf = io.BytesIO()
+    bg_canvas.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    bg_url = f"data:image/png;base64,{b64}"
+    # ---------------------------------------------------------------
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
 
     with c1:
         entry = st_canvas(
-            fill_color="rgba(0,255,0,0.1)",
-            stroke_width=3,
-            stroke_color="#00ff00",
-            background_image=bg_np,                   # <-- NumPy statt PIL
+            fill_color="rgba(0,255,0,0.1)", stroke_width=3, stroke_color="#00ff00",
+            background_image_url=bg_url,
             background_color="#00000000",
             update_streamlit=True,
-            height=int(canvas_h),
-            width=int(canvas_w),
+            height=int(canvas_h), width=int(canvas_w),
             drawing_mode="line",
             key=f"entry_canvas_{st.session_state.ref_idx}",
             display_toolbar=False,
@@ -187,29 +190,21 @@ if paths:
 
     with c2:
         exitc = st_canvas(
-            fill_color="rgba(255,0,0,0.1)",
-            stroke_width=3,
-            stroke_color="#ff0000",
-            background_image=bg_np,                   # <-- NumPy statt PIL
+            fill_color="rgba(255,0,0,0.1)", stroke_width=3, stroke_color="#ff0000",
+            background_image_url=bg_url,
             background_color="#00000000",
             update_streamlit=True,
-            height=int(canvas_h),
-            width=int(canvas_w),
+            height=int(canvas_h), width=int(canvas_w),
             drawing_mode="line",
             key=f"exit_canvas_{st.session_state.ref_idx}",
             display_toolbar=False,
         )
 
-
-
-    
-    # -------------------------------------------------
-
     if st.button("Analysieren", type="primary"):
         entry_line = line_from_canvas(entry.json_data)
         exit_line  = line_from_canvas(exitc.json_data)
         if not entry_line or not exit_line:
-            st.error("Bitte **beide** Linien zeichnen."); st.stop()
+            st.error("Bitte beide Linien zeichnen."); st.stop()
 
         model = YOLO("yolov8n.pt")
         results_table, trimmed = [], []
@@ -267,7 +262,6 @@ if paths:
             out_path = os.path.join(tempfile.gettempdir(), "overlay.mp4")
             writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), out_fps, (w, h))
 
-            # Initiale Frames schreiben
             init_frames = [ref]
             for i in range(1, len(caps)):
                 ok, fr = caps[i].read()
@@ -275,7 +269,6 @@ if paths:
                 init_frames.append(fr)
             writer.write(alpha_blend(init_frames, alphas[: len(init_frames)]))
 
-            # Rest
             while True:
                 frames, ended = [], 0
                 for c in caps:
