@@ -18,21 +18,17 @@ def load_first_frame(video_path, max_w=1280):
         frame = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
     return frame
 
-
 def center_of_box(xyxy):
     x1, y1, x2, y2 = xyxy
     return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
-
 def seg_intersection(p1, p2, q1, q2):
-    def ccw(a, b, c): 
-        return (c[1]-a[1])*(b[0]-a[0]) > (b[1]-a[1])*(c[0]-a[0])
-    return (ccw(p1,q1,q2) != ccw(p2,q1,q2)) and (ccw(p1,p2,q1) != ccw(p1,p2,q2))
-
+    def ccw(a, b, c):
+        return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
+    return (ccw(p1, q1, q2) != ccw(p2, q1, q2)) and (ccw(p1, p2, q1) != ccw(p1, p2, q2))
 
 def timecode(seconds):
-    return time.strftime('%M:%S', time.gmtime(seconds)) + f'.{int((seconds % 1) * 1000):03d}'
-
+    return time.strftime("%M:%S", time.gmtime(seconds)) + f".{int((seconds % 1) * 1000):03d}"
 
 def alpha_blend(frames, alphas):
     out = np.zeros_like(frames[0], dtype=np.float32)
@@ -40,14 +36,12 @@ def alpha_blend(frames, alphas):
         out += f.astype(np.float32) * a
     return np.clip(out, 0, 255).astype(np.uint8)
 
-
 def resize_to_width(frame, width):
     h, w = frame.shape[:2]
     if w == width:
         return frame
     s = width / w
     return cv2.resize(frame, (width, int(h * s)), interpolation=cv2.INTER_AREA)
-
 
 def line_from_canvas(json_data):
     if not json_data or "objects" not in json_data:
@@ -62,13 +56,12 @@ def line_from_canvas(json_data):
             return ((mx, my), (lx, ly))
     return None
 
-
 def trim_clip(src_path, dst_path, t0, t1):
     with VideoFileClip(src_path) as clip:
         sub = clip.subclip(max(t0, 0), max(t1, 0))
-        sub.write_videofile(dst_path, codec="libx264", audio=False,
-                            fps=clip.fps, verbose=False, logger=None)
-
+        sub.write_videofile(
+            dst_path, codec="libx264", audio=False, fps=clip.fps, verbose=False, logger=None
+        )
 
 def detect_times(video_path, entry_line, exit_line, model):
     timings, last_centers = {}, {}
@@ -119,11 +112,11 @@ def detect_times(video_path, entry_line, exit_line, model):
 st.set_page_config(page_title="S-Curve Analyzer (Web)", layout="wide")
 st.title("🏎️ S-Curve Analyzer – komplett im Browser (kostenlos)")
 
-st.markdown("""
-1. Lade **1–3 Stativ-Clips** der gleichen S-Kurve hoch.  
-2. Zeichne **Einfahrt** und **Ausfahrt** auf das Vorschaubild.  
-3. Klicke **Analysieren** → Fahrzeug-Erkennung, Sektorzeiten, **Auto-Trim** und **Overlay** (bis 3).
-""")
+st.markdown(
+    "1. Lade **1–3 Stativ-Clips** der gleichen S-Kurve hoch.  \n"
+    "2. Zeichne **Einfahrt** und **Ausfahrt** auf das Vorschaubild.  \n"
+    "3. Klicke **Analysieren** → Fahrzeug-Erkennung, Sektorzeiten, **Auto-Trim** und **Overlay** (bis 3)."
+)
 
 uploaded = st.file_uploader(
     "Clips (MP4/MOV)", type=["mp4", "mov", "m4v"], accept_multiple_files=True
@@ -132,22 +125,31 @@ alpha_top = st.slider("Deckkraft obere Ebenen", 0.3, 0.8, 0.5, 0.05)
 out_width = st.select_slider("Exportbreite", options=[854, 960, 1280, 1600, 1920], value=1280)
 
 if uploaded:
+    # Temporäre Dateien erzeugen
     tmp_paths = []
+    names = []
     for uf in uploaded[:3]:
         suffix = os.path.splitext(uf.name)[1].lower()
         t = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-        t.write(uf.read())
-        t.flush(); t.close()
+        t.write(uf.read()); t.flush(); t.close()
         tmp_paths.append(t.name)
+        names.append(uf.name)
 
-    first_frame = load_first_frame(tmp_paths[0])
+    # --- NEU: Auswahl, welches Video für die Linien als Hintergrund dient ---
+    st.caption("Wähle, aus welchem Clip das Vorschaubild zum Zeichnen der Linien verwendet wird.")
+    ref_idx = st.selectbox("Referenz-Clip für Linien", options=list(range(len(tmp_paths))),
+                           format_func=lambda i: names[i], index=0)
+
+    first_frame = load_first_frame(tmp_paths[ref_idx], max_w=1280)
     if first_frame is None:
         st.error("Konnte ersten Frame nicht laden.")
         st.stop()
 
-    # --- FIX: PIL-Image für Canvas-Hintergrund ---
+    # PIL-Image für den Canvas
     img_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
     bg_img = Image.fromarray(img_rgb)
+    if bg_img.mode != "RGB":
+        bg_img = bg_img.convert("RGB")
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2)
@@ -157,10 +159,12 @@ if uploaded:
             stroke_width=3,
             stroke_color="#00ff00",
             background_image=bg_img,
+            background_color=None,           # wichtig für korrektes Rendering
+            update_streamlit=True,           # zwingt Re-Render
             height=bg_img.height,
             width=bg_img.width,
             drawing_mode="line",
-            key="entry",
+            key="entry_canvas",
         )
     with c2:
         exitc = st_canvas(
@@ -168,10 +172,12 @@ if uploaded:
             stroke_width=3,
             stroke_color="#ff0000",
             background_image=bg_img,
+            background_color=None,
+            update_streamlit=True,
             height=bg_img.height,
             width=bg_img.width,
             drawing_mode="line",
-            key="exit",
+            key="exit_canvas",
         )
 
     if st.button("Analysieren"):
@@ -187,7 +193,7 @@ if uploaded:
 
         with st.spinner("Analysiere Clips …"):
             for idx, vpath in enumerate(tmp_paths):
-                valid, fps, first = detect_times(vpath, entry_line, exit_line, model)
+                valid, fps, _ = detect_times(vpath, entry_line, exit_line, model)
                 if not valid:
                     results_table.append(
                         {"Clip": os.path.basename(vpath),
@@ -199,7 +205,8 @@ if uploaded:
                     {"Clip": os.path.basename(vpath),
                      "VehicleID": int(best_id),
                      "Zeit": f"{dt:.3f}s",
-                     "t_in": f"{t_in:.3f}", "t_out": f"{t_out:.3f}"}
+                     "t_in": f"{t_in:.3f}",
+                     "t_out": f"{t_out:.3f}"}
                 )
                 pad = 0.15
                 outp = os.path.join(tempfile.gettempdir(), f"trim_{idx}.mp4")
@@ -214,10 +221,11 @@ if uploaded:
             st.stop()
 
         st.markdown("### Overlay-Auswahl (bis 3)")
-        names = [f"{os.path.basename(p)} (ID {int(vid)}, {d:.3f}s)" for (p, vid, d) in trimmed]
+        pretty = [f"{names[i]} (ID {int(vid)}, {d:.3f}s)" for i, (p, vid, d) in enumerate(trimmed)]
         sel = st.multiselect(
-            "Wähle Clips", options=list(range(len(names))),
-            default=list(range(min(3, len(names))))
+            "Wähle Clips", options=list(range(len(pretty))),
+            format_func=lambda i: pretty[i],
+            default=list(range(min(3, len(pretty))))
         )
         if sel:
             chosen = [trimmed[i] for i in sel][:3]
@@ -276,5 +284,6 @@ if uploaded:
             st.download_button(
                 "Overlay-Video herunterladen",
                 data=open(out_path, "rb").read(),
-                file_name="overlay.mp4", mime="video/mp4"
+                file_name="overlay.mp4",
+                mime="video/mp4",
             )
