@@ -1,16 +1,12 @@
 # app.py
 import os
-import io
 import tempfile
-import time
 
 import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
 from ultralytics import YOLO
-
-# Canvas zum Zeichnen
 from streamlit_drawable_canvas import st_canvas
 
 
@@ -55,7 +51,7 @@ def resize_to_width(frame, width):
 
 
 def line_from_canvas(json_data):
-    """Extrahiere eine Linie (zwei Punkte) aus dem Canvas-JSON."""
+    """Extrahiere eine Linie (zwei Punkte) aus dem Canvas-JSON (Canvas-Koords!)."""
     if not json_data or "objects" not in json_data:
         return None
     for obj in json_data["objects"]:
@@ -70,11 +66,15 @@ def line_from_canvas(json_data):
     return None
 
 
+def scale_line_to_frame(line, sx, sy):
+    """Skaliert Canvas-Linie (canvas_w x canvas_h) auf Frame-Koordinaten."""
+    (x1, y1), (x2, y2) = line
+    return ((x1 * sx, y1 * sy), (x2 * sx, y2 * sy))
+
+
 def trim_clip(src_path, dst_path, t0, t1):
-    # lazy import (schnelleres Deployment)
     from moviepy.editor import VideoFileClip
     with VideoFileClip(src_path) as clip:
-        # Grenzen absichern
         start = max(0.0, float(t0))
         end = max(start, float(t1))
         sub = clip.subclip(start, end)
@@ -85,14 +85,13 @@ def trim_clip(src_path, dst_path, t0, t1):
 
 
 def detect_times(video_path, entry_line, exit_line, model):
-    """YOLOv8 + BYTETRACK. Wenn Tracker-Lib fehlt, werfen wir eine ImportError mit Hinweis."""
-    # Prüfe, ob lapx (oder lap) verfügbar ist – benötigt vom Ultralytics-Tracker.
+    """YOLOv8 + ByteTrack → (tid, t_in, t_out, dt)."""
     try:
         import lapx  # noqa: F401
     except Exception:
         raise ImportError(
             "Tracker-Abhängigkeit fehlt (lap/lapx). "
-            "Bitte füge 'lapx==0.5.6' zu requirements.txt hinzu bzw. installiere es."
+            "Bitte installiere z.B. 'lapx==0.5.6'."
         )
 
     timings, last_centers = {}, {}
@@ -110,10 +109,8 @@ def detect_times(video_path, entry_line, exit_line, model):
     )
     frame_i = 0
     for r in stream:
-        if getattr(r, "orig_shape", None) is not None:
-            oh, ow = r.orig_shape
-        else:
-            oh, ow = first.shape[:2]
+        # Box-Koordinaten auf die Breite des ersten Frames bringen
+        ow = r.orig_shape[1] if getattr(r, "orig_shape", None) else first.shape[1]
         scale = width_ref / float(ow)
 
         if r.boxes is not None and hasattr(r.boxes, "id") and r.boxes.id is not None:
@@ -145,7 +142,7 @@ def detect_times(video_path, entry_line, exit_line, model):
 try:
     RESAMPLE = Image.Resampling.BILINEAR  # Pillow >= 10
 except Exception:
-    RESAMPLE = Image.BILINEAR             # Fallback für ältere Versionen
+    RESAMPLE = Image.BILINEAR             # Fallback
 
 
 # =================== UI ===================
@@ -195,27 +192,28 @@ if paths:
         index=st.session_state.ref_idx, format_func=lambda i: names[i]
     )
 
-    # 1. Frame des Referenz-Clips laden
+    # 1. Frame des Referenz-Clips laden (BGR)
     first_bgr = load_first_frame(paths[st.session_state.ref_idx], max_w=1280)
     if first_bgr is None:
         st.error("Konnte ersten Frame nicht laden.")
         st.stop()
 
-    # Vorschau anzeigen (NumPy RGB)
+    # Preview (RGB) anzeigen
     st.markdown("### Vorschau-Frame")
     preview = cv2.cvtColor(first_bgr, cv2.COLOR_BGR2RGB)
     st.image(preview, caption="Referenz-Frame", width=min(960, preview.shape[1]))
 
-    # Canvas-Hintergrund als PIL RGB erzeugen & skalieren
+    # Canvas-Hintergrund als PIL RGB erzeugen & skalieren (PIL erwartet!)
     first_rgb = cv2.cvtColor(first_bgr, cv2.COLOR_BGR2RGB)
     bg_img = Image.fromarray(first_rgb).convert("RGB")
 
     canvas_w = min(640, bg_img.width)
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
-    bg_canvas = bg_img.resize((canvas_w, canvas_h), RESAMPLE)
+    bg_canvas = bg_img.resize((canvas_w, canvas_h), RESAMPLE)  # PIL.Image!
 
-    # Für Canvas als NumPy-Array (robuster mit verschiedenen Versionen)
-    bg_np = np.array(bg_canvas)
+    # Skalierungsfaktoren Canvas → Originalframe
+    sx = first_bgr.shape[1] / float(canvas_w)
+    sy = first_bgr.shape[0] / float(canvas_h)
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
@@ -223,11 +221,11 @@ if paths:
     with c1:
         st.markdown("**Einfahrt-Linie**")
         entry_canvas = st_canvas(
-            background_image=bg_np.copy(),  # NumPy statt PIL
+            background_image=bg_canvas,  # PIL.Image expected by the lib
             background_color=None,
             height=canvas_h,
             width=canvas_w,
-            drawing_mode="line",                # Linie ziehen (Klick & Drag)
+            drawing_mode="line",
             stroke_width=4,
             stroke_color="#00ff00",
             update_streamlit=True,
@@ -238,7 +236,7 @@ if paths:
     with c2:
         st.markdown("**Ausfahrt-Linie**")
         exit_canvas = st_canvas(
-            background_image=bg_np.copy(),   # NumPy statt PIL
+            background_image=bg_canvas,   # separate copy ist nicht nötig
             background_color=None,
             height=canvas_h,
             width=canvas_w,
@@ -247,12 +245,14 @@ if paths:
             stroke_color="#ff0000",
             update_streamlit=True,
             display_toolbar=False,
-            key=f"exit_canvas_{st.session_state.ref_idx}",
+            key=f"exit_canvas_{st.session_state.ref_idx}_exit",
         )
 
-    # Linien extrahieren
-    entry_line = line_from_canvas(getattr(entry_canvas, "json_data", None))
-    exit_line  = line_from_canvas(getattr(exit_canvas,  "json_data", None))
+    # Linien (Canvas-Koords) extrahieren und auf Framegröße hochskalieren
+    entry_line_canvas = line_from_canvas(getattr(entry_canvas, "json_data", None))
+    exit_line_canvas  = line_from_canvas(getattr(exit_canvas,  "json_data", None))
+    entry_line = scale_line_to_frame(entry_line_canvas, sx, sy) if entry_line_canvas else None
+    exit_line  = scale_line_to_frame(exit_line_canvas,  sx, sy) if exit_line_canvas else None
 
     ready = entry_line is not None and exit_line is not None
     if not ready:
@@ -286,7 +286,6 @@ if paths:
                     trim_clip(vpath, outp, t_in - pad, t_out + pad)
                     trimmed.append((outp, best_id, dt))
         except ImportError as e:
-            # ByteTrack/LAPX fehlt → klare Meldung
             st.error(str(e))
             st.stop()
 
