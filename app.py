@@ -108,35 +108,62 @@ def pil_to_data_url(img: Image.Image) -> str:
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return "data:image/png;base64," + b64
 
-def click_two_points_on_image(img_bgr: np.ndarray, title: str, key: str):
-    """Zeigt das Bild (BGR) als Plotly-Hintergrund und gibt nach genau 2 Klicks die (x,y)-Paare zurück."""
+def click_two_points_on_image(img_bgr, title: str, key: str):
+    """
+    Show the image as a Plotly Image trace (clickable) and return exactly two (x,y) clicks.
+    - Uses dragmode='pan' so dragging doesn't create a zoom box.
+    - Hides zoom/select/lasso tools in the modebar.
+    - Returns (p1, p2) as tuples in pixel coords (x to the right, y down).
+    """
+    # Convert to RGB for display
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     h, w = img_rgb.shape[:2]
-    data_url = pil_to_data_url(Image.fromarray(img_rgb))
 
-    fig = go.Figure()
-    fig.update_xaxes(visible=False, range=[0, w])
-    fig.update_yaxes(visible=False, range=[h, 0])  # y-Achse invertiert für Bildkoords
-    fig.add_layout_image(
-        dict(source=data_url, xref="x", yref="y", x=0, y=0, sizex=w, sizey=h, sizing="stretch", layer="below")
+    # 1) Use an Image trace (click events fire on it)
+    fig = go.Figure(data=[go.Image(z=img_rgb)])
+
+    # 2) Axes & layout
+    fig.update_xaxes(
+        visible=False,
+        range=[0, w]
+    )
+    fig.update_yaxes(
+        visible=False,
+        range=[h, 0]
     )
     fig.update_layout(
-        width=min(700, int(w*0.9)), height=int(min(700, int(w*0.9)) * (h/w)),
-        margin=dict(l=0, r=0, t=30, b=0), title=title
+        dragmode="pan",
+        clickmode="event+select",
+        margin=dict(l=0, r=0, t=30, b=0),
+        width=min(900, int(w * 0.95)),
+        height=int(min(900, int(w * 0.95)) * (h / w)),
+        title=title
     )
 
+    # 3) Clean modebar
+    config = {
+        "displaylogo": False,
+        "modeBarButtonsToRemove": [
+            "zoom2d", "select2d", "lasso2d", "autoscale", "toggleSpikelines",
+            "zoomIn2d", "zoomOut2d", "resetScale2d"
+        ],
+        "scrollZoom": False
+    }
+
     st.caption("❗ Klicke **genau 2 Punkte** (Start und Ende der Linie).")
-    events = plotly_events(fig, click_event=True, hover_event=False, select_event=False, key=key)
+    events = plotly_events(
+        fig,
+        click_event=True,
+        hover_event=False,
+        select_event=False,
+        key=key,
+        config=config
+    )
 
-    # Zeige optional die bisher geklickten Punkte
-    if events:
-        pts = [(e["x"], e["y"]) for e in events if ("x" in e and "y" in e)]
-        st.write("Geklickt:", pts)
-
-    if events and len(events) >= 2:
-        p1 = (float(events[0]["x"]), float(events[0]["y"]))
-        p2 = (float(events[1]["x"]), float(events[1]["y"]))
-        return p1, p2
+    # Extract first two clicks (x,y)
+    pts = [(float(e["x"]), float(e["y"])) for e in events if ("x" in e and "y" in e)]
+    if len(pts) >= 2:
+        return pts[0], pts[1]
     return None, None
 
 # =================== UI ===================
