@@ -10,6 +10,25 @@ from PIL import Image
 from ultralytics import YOLO
 from streamlit_drawable_canvas import st_canvas
 
+# --- Shim: fügt st_image.image_to_url nach, falls in deiner Streamlit-Version entfernt ---
+try:
+    from streamlit.elements import image as _st_image
+    if not hasattr(_st_image, "image_to_url"):
+        import base64
+        from io import BytesIO
+        def _image_to_url(img, width=None, clamp=False, channels="RGB", output_format="PNG"):
+            buf = BytesIO()
+            # img ist PIL.Image
+            img.save(buf, format=output_format)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            url = f"data:image/{output_format.lower()};base64,{b64}"
+            # altes API-Pattern: (url, dims_dict)
+            return url, {"width": getattr(img, "width", None), "height": getattr(img, "height", None)}
+        _st_image.image_to_url = _image_to_url
+except Exception:
+    pass
+
+
 # ========================= Utils =========================
 
 def load_first_frame(video_path, max_w=1280):
