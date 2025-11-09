@@ -2,15 +2,16 @@
 import os
 import base64
 import tempfile
+from io import BytesIO
+
 import cv2
 import numpy as np
 import streamlit as st
-from io import BytesIO
 from PIL import Image
 from ultralytics import YOLO
 from streamlit_drawable_canvas import st_canvas
 
-# ---------- Utils ----------
+# =================== Utils ===================
 def load_first_frame(video_path, max_w=1280):
     cap = cv2.VideoCapture(video_path)
     ok, frame = cap.read()
@@ -46,7 +47,7 @@ def resize_to_width(frame, width):
     return cv2.resize(frame, (width, int(h * s)), interpolation=cv2.INTER_AREA)
 
 def line_from_canvas(json_data):
-    """Extrahiert eine Linie (zwei Punkte) aus dem Canvas-JSON (Canvas-Koordinaten)."""
+    """Extrahiere eine Linie (zwei Punkte) aus dem Canvas-JSON (Canvas-Koords)."""
     if not json_data or "objects" not in json_data:
         return None
     for obj in json_data["objects"]:
@@ -64,7 +65,6 @@ def scale_line_to_frame(line, sx, sy):
     return ((x1 * sx, y1 * sy), (x2 * sx, y2 * sy))
 
 def pil_to_data_url(img: Image.Image, fmt: str = "PNG") -> str:
-    """Konvertiert PIL-Image zu data:image/...;base64,.... für st_canvas(background_image_url)."""
     buf = BytesIO()
     img.save(buf, format=fmt)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
@@ -84,7 +84,7 @@ def trim_clip(src_path, dst_path, t0, t1):
 def detect_times(video_path, entry_line, exit_line, model):
     """YOLOv8 + ByteTrack → Liste[(tid, t_in, t_out, dt)], fps, first_frame."""
     try:
-        import lapx  # noqa
+        import lapx  # noqa: F401
     except Exception:
         raise ImportError("Tracker-Abhängigkeit fehlt (lap/lapx). Bitte 'lapx==0.5.6' installieren.")
 
@@ -129,13 +129,34 @@ def detect_times(video_path, entry_line, exit_line, model):
     valid.sort(key=lambda x: x[3])
     return valid, fps, first
 
-# Pillow Resampling kompatibel halten
+# ===== Pillow Resampling kompatibel =====
 try:
     RESAMPLE = Image.Resampling.BILINEAR
 except Exception:
     RESAMPLE = Image.BILINEAR
 
-# ---------- UI ----------
+# ===== Compat-Wrapper für st_canvas =====
+def draw_canvas_with_bg(bg_pil: Image.Image, *, height: int, width: int, key: str, stroke_color: str):
+    """Robuster Wrapper: erst mit background_image_url probieren, sonst Fallback auf PIL."""
+    common = dict(
+        background_color=None,
+        height=height,
+        width=width,
+        drawing_mode="line",
+        stroke_width=4,
+        stroke_color=stroke_color,
+        update_streamlit=True,
+        display_toolbar=False,
+        key=key,
+    )
+    # 1) Neuer Weg: Data-URL (funktioniert mit neueren Streamlit-Versionen)
+    try:
+        return st_canvas(background_image=None, background_image_url=pil_to_data_url(bg_pil, "PNG"), **common)
+    except TypeError:
+        # 2) Älterer Weg: direktes PIL-Image (Lib ruft intern image_to_url)
+        return st_canvas(background_image=bg_pil, **common)
+
+# =================== UI ===================
 st.set_page_config(page_title="S-Curve Analyzer (Web)", layout="wide")
 st.title("🏎️ S-Curve Analyzer – Linien **ziehen** auf dem Vorschaubild")
 
@@ -179,25 +200,24 @@ if paths:
         index=st.session_state.ref_idx, format_func=lambda i: names[i]
     )
 
-    # erstes Frame laden
+    # 1. Frame des Referenz-Clips laden
     first_bgr = load_first_frame(paths[st.session_state.ref_idx], max_w=1280)
     if first_bgr is None:
         st.error("Konnte ersten Frame nicht laden."); st.stop()
 
-    # Preview
+    # Vorschau anzeigen (RGB)
     st.markdown("### Vorschau-Frame")
     preview = cv2.cvtColor(first_bgr, cv2.COLOR_BGR2RGB)
     st.image(preview, caption="Referenz-Frame", width=min(960, preview.shape[1]))
 
-    # Canvas-Hintergrund als PIL + DataURL (um Streamlit-API-Change zu umgehen)
+    # Canvas-Hintergrund (PIL) + Größe
     first_rgb = cv2.cvtColor(first_bgr, cv2.COLOR_BGR2RGB)
     bg_img = Image.fromarray(first_rgb).convert("RGB")
     canvas_w = min(640, bg_img.width)
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
     bg_canvas = bg_img.resize((canvas_w, canvas_h), RESAMPLE)
-    bg_data_url = pil_to_data_url(bg_canvas, "PNG")
 
-    # Skalierungsfaktoren Canvas → Originalframe
+    # Skalierung Canvas → Originalframe
     sx = first_bgr.shape[1] / float(canvas_w)
     sy = first_bgr.shape[0] / float(canvas_h)
 
@@ -206,34 +226,18 @@ if paths:
 
     with c1:
         st.markdown("**Einfahrt-Linie**")
-        entry_canvas = st_canvas(
-            background_image=None,
-            background_image_url=bg_data_url,  # ✅ Data-URL statt PIL/np
-            background_color=None,
-            height=canvas_h,
-            width=canvas_w,
-            drawing_mode="line",
-            stroke_width=4,
-            stroke_color="#00ff00",
-            update_streamlit=True,
-            display_toolbar=False,
+        entry_canvas = draw_canvas_with_bg(
+            bg_canvas, height=canvas_h, width=canvas_w,
             key=f"entry_canvas_{st.session_state.ref_idx}",
+            stroke_color="#00ff00",
         )
 
     with c2:
         st.markdown("**Ausfahrt-Linie**")
-        exit_canvas = st_canvas(
-            background_image=None,
-            background_image_url=bg_data_url,  # ✅
-            background_color=None,
-            height=canvas_h,
-            width=canvas_w,
-            drawing_mode="line",
-            stroke_width=4,
-            stroke_color="#ff0000",
-            update_streamlit=True,
-            display_toolbar=False,
+        exit_canvas = draw_canvas_with_bg(
+            bg_canvas, height=canvas_h, width=canvas_w,
             key=f"exit_canvas_{st.session_state.ref_idx}_exit",
+            stroke_color="#ff0000",
         )
 
     # Linien extrahieren & auf Framegröße mappen
@@ -244,9 +248,9 @@ if paths:
 
     ready = entry_line is not None and exit_line is not None
     if not ready:
-        st.info("⚠️ Bitte in **beiden** Canvases je **eine Linie ziehen** (Start ↔ Ende).")
+        st.info("⚠️ Bitte in **beiden** Canvases je **eine Linie** ziehen (Start ↔ Ende).")
 
-    # -------- Analyse --------
+    # ------------------- Analyse -------------------
     if st.button("Analysieren", type="primary", disabled=not ready):
         model = YOLO("yolov8n.pt")
         results_table, trimmed = [], []
@@ -282,7 +286,7 @@ if paths:
         if not trimmed:
             st.warning("Keine gültigen Sektorzeiten erkannt."); st.stop()
 
-        # -------- Overlay --------
+        # ------------------- Overlay -------------------
         st.markdown("### Overlay erstellen (bis 3 Clips)")
         names_pretty = [f"{os.path.basename(p)} (ID {int(vid)}, {d:.3f}s)" for (p, vid, d) in trimmed]
         sel_idx = st.multiselect(
@@ -305,7 +309,9 @@ if paths:
             ref = resize_to_width(ref, out_width)
             h, w = ref.shape[:2]
 
-            alphas = [1.0] if len(chosen) == 1 else [1.0, alpha_top] if len(chosen) == 2 else [1.0, alpha_top, alpha_top]
+            if len(chosen) == 1: alphas = [1.0]
+            elif len(chosen) == 2: alphas = [1.0, alpha_top]
+            else: alphas = [1.0, alpha_top, alpha_top]
 
             out_path = os.path.join(tempfile.gettempdir(), "overlay.mp4")
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -337,4 +343,9 @@ if paths:
             st.success("Fertig! Overlay & Zeiten erzeugt.")
             st.video(out_path)
             with open(out_path, "rb") as f:
-                st.download_button("Overlay-Video herunterladen", data=f.read(), file_name="overlay.mp4", mime="video/mp4")
+                st.download_button(
+                    "Overlay-Video herunterladen",
+                    data=f.read(),
+                    file_name="overlay.mp4",
+                    mime="video/mp4"
+                )
