@@ -66,6 +66,36 @@ try:
 except Exception:
     RESAMPLE = Image.BILINEAR
 
+# ===== Kompatibilitäts-Wrapper für st_canvas =====
+import inspect
+from streamlit_drawable_canvas import st_canvas
+
+def draw_canvas(bg_pil, *, height, width, key, stroke_color="#00ff00"):
+    """Kompatibel mit alten & neuen drawable-canvas-Versionen."""
+    common = dict(
+        background_color=None,
+        height=height,
+        width=width,
+        drawing_mode="line",
+        stroke_width=4,
+        stroke_color=stroke_color,
+        update_streamlit=True,
+        display_toolbar=False,
+        key=key,
+    )
+    params = inspect.signature(st_canvas).parameters
+    if "background_image_url" in params:   # neuere Lib
+        import base64
+        from io import BytesIO
+        buf = BytesIO(); bg_pil.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        url = f"data:image/png;base64,{b64}"
+        return st_canvas(background_image=None, background_image_url=url, **common)
+    else:                                   # ältere Lib
+        return st_canvas(background_image=bg_pil, **common)
+
+
+
 # ========================= Simple IoU Tracker =========================
 # Minimaler Frame-zu-Frame-Tracker ohne externe Abhängigkeiten
 
@@ -169,34 +199,16 @@ if uploaded:
 
     with c1:
         st.markdown("**Einfahrts-Linie**")
-        entry_canvas = st_canvas(
-            background_image=None,
-            background_image_url=bg_url,
-            background_color=None,
-            height=canvas_h,
-            width=canvas_w,
-            drawing_mode="line",
-            stroke_width=4,
-            stroke_color="#00ff00",
-            update_streamlit=True,
-            display_toolbar=False,
-            key="entry_canvas"
+        entry_canvas = draw_canvas(
+            bg_canvas, height=canvas_h, width=canvas_w,
+            key="entry_canvas", stroke_color="#00ff00"
         )
 
     with c2:
         st.markdown("**Ausfahrts-Linie**")
-        exit_canvas = st_canvas(
-            background_image=None,
-            background_image_url=bg_url,
-            background_color=None,
-            height=canvas_h,
-            width=canvas_w,
-            drawing_mode="line",
-            stroke_width=4,
-            stroke_color="#ff0000",
-            update_streamlit=True,
-            display_toolbar=False,
-            key="exit_canvas"
+        exit_canvas = draw_canvas(
+            bg_canvas, height=canvas_h, width=canvas_w,
+            key="exit_canvas", stroke_color="#ff0000"
         )
 
     # Linien (Canvas-Koords) extrahieren und auf Framegröße skalieren
