@@ -1,5 +1,6 @@
+streamlit
+plotly
+streamlit-plotly-events
 ultralytics==8.*
 opencv-python-headless
-streamlit
-streamlit-drawable-canvas
 pillow>=10
