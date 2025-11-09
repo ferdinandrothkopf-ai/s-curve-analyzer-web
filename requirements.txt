@@ -1,22 +1,7 @@
-# === Core Runtime ===
-streamlit==1.38.0
-streamlit-drawable-canvas==0.9.3
-streamlit-plotly-events==0.0.6
-plotly==5.24.0
-numpy==1.26.4
-opencv-python-headless==4.10.0.84
-pillow==10.3.0
-
-# === ML / Tracking ===
-ultralytics==8.2.103
-lapx==0.5.6        # Ersatz für "lap", damit YOLOv8 tracking funktioniert
-torch>=2.2.0
-torchvision>=0.17.0
-
-# === Video Handling ===
-moviepy==1.0.3
-imageio==2.35.1
-imageio-ffmpeg==0.5.1
-
-# === Optional (Stabilität / Logging) ===
-tqdm==4.66.5
+ultralytics==8.*
+opencv-python-headless
+streamlit
+streamlit-drawable-canvas
+pillow>=10
+moviepy
+lapx==0.5.6
