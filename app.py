@@ -1,48 +1,18 @@
 # app.py
 import os
-import base64
-from io import BytesIO
 import tempfile
+from typing import List, Tuple
+
 import cv2
 import numpy as np
 import streamlit as st
-from PIL import Image
 from ultralytics import YOLO
-from streamlit_drawable_canvas import st_canvas
 
-# --- Robust-Shim für alte drawable-canvas Versionen ---
-# Stellt st_image.image_to_url bereit (Signatur-kompatibel).
-try:
-    from streamlit.elements import image as _st_image
-    if not hasattr(_st_image, "image_to_url"):
-        import base64
-        from io import BytesIO
-        from PIL import Image as _PILImage
-        import numpy as _np
+import plotly.graph_objects as go
+from streamlit_plotly_events import plotly_events
 
-        def image_to_url(*args, **kwargs):
-            img = args[0] if args else kwargs.get("image")
-            if isinstance(img, _np.ndarray):
-                if img.ndim == 3 and img.shape[2] == 3:
-                    img = _PILImage.fromarray(img.astype("uint8"), mode="RGB")
-                else:
-                    img = _PILImage.fromarray(img.astype("uint8"))
-            elif not isinstance(img, _PILImage.Image):
-                img = _PILImage.open(img)
 
-            buf = BytesIO()
-            img.save(buf, format="PNG")
-            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-            url = f"data:image/png;base64,{b64}"
-            dims = {"width": getattr(img, "width", None), "height": getattr(img, "height", None)}
-            return url, dims
-
-        _st_image.image_to_url = image_to_url
-except Exception:
-    pass
-
-# ========================= Utils =========================
-
+# ============ Utils ============
 def load_first_frame(video_path, max_w=1280):
     cap = cv2.VideoCapture(video_path)
     ok, frame = cap.read()
@@ -55,86 +25,61 @@ def load_first_frame(video_path, max_w=1280):
         frame = cv2.resize(frame, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
     return frame
 
-def to_rgb(bgr):
-    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+def bgr2rgb(img):
+    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 def center_of_box(xyxy):
     x1, y1, x2, y2 = xyxy
-    return ((x1 + x2) * 0.5, (y1 + y2) * 0.5)
+    return (0.5*(x1+x2), 0.5*(y1+y2))
 
 def seg_intersection(p1, p2, q1, q2):
     def ccw(a, b, c):
-        return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
-    return (ccw(p1, q1, q2) != ccw(p2, q1, q2)) and (ccw(p1, p2, q1) != ccw(p1, p2, q2))
+        return (c[1]-a[1])*(b[0]-a[0]) > (b[1]-a[1])*(c[0]-a[0])
+    return (ccw(p1,q1,q2) != ccw(p2,q1,q2)) and (ccw(p1,p2,q1) != ccw(p1,p2,q2))
 
-def line_from_canvas(json_data):
-    """Extrahiere eine Linie (zwei Punkte) aus dem Canvas-JSON (Canvas-Koords)."""
-    if not json_data or "objects" not in json_data:
-        return None
-    for obj in json_data["objects"]:
-        if obj.get("type") == "line":
-            x1 = obj["x1"] + obj["left"]; y1 = obj["y1"] + obj["top"]
-            x2 = obj["x2"] + obj["left"]; y2 = obj["y2"] + obj["top"]
-            return ((x1, y1), (x2, y2))
-        if obj.get("type") == "path" and obj.get("path"):
-            (mx, my, *_), (lx, ly, *_) = obj["path"][0], obj["path"][-1]
-            return ((mx, my), (lx, ly))
-    return None
+def make_fig_with_lines(img_rgb: np.ndarray,
+                        entry_pts: List[Tuple[float,float]],
+                        exit_pts:  List[Tuple[float,float]],
+                        width_px: int = 800) -> go.Figure:
+    """Plotly-Figure mit Bild und bereits gesetzten Linien (falls vorhanden)."""
+    h, w = img_rgb.shape[:2]
+    fig = go.Figure()
+    fig.add_trace(go.Image(z=img_rgb))
+    # Plotly-Bild-Koordinaten: x in [0,w], y in [0,h] mit y nach unten -> wir spiegeln Achsen passend
+    fig.update_xaxes(showgrid=False, visible=False, range=[0, w])
+    fig.update_yaxes(showgrid=False, visible=False, range=[h, 0])  # invert y
+    shapes = []
+    if len(entry_pts) == 2:
+        shapes.append(dict(type="line",
+                           x0=entry_pts[0][0], y0=entry_pts[0][1],
+                           x1=entry_pts[1][0], y1=entry_pts[1][1],
+                           line=dict(color="lime", width=4)))
+    if len(exit_pts) == 2:
+        shapes.append(dict(type="line",
+                           x0=exit_pts[0][0], y0=exit_pts[0][1],
+                           x1=exit_pts[1][0], y1=exit_pts[1][1],
+                           line=dict(color="red", width=4)))
+    fig.update_layout(width=min(width_px, w), margin=dict(l=0,r=0,t=0,b=0), shapes=shapes)
+    return fig
 
-def scale_line_to_frame(line, sx, sy):
-    (x1, y1), (x2, y2) = line
-    return ((x1 * sx, y1 * sy), (x2 * sx, y2 * sy))
+def simple_iou(a, b):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    x1, y1 = max(ax1, bx1), max(ay1, by1)
+    x2, y2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, x2-x1), max(0, y2-y1)
+    inter = iw*ih
+    area_a = (ax2-ax1)*(ay2-ay1)
+    area_b = (bx2-bx1)*(by2-by1)
+    return inter / (area_a + area_b - inter + 1e-6)
 
-try:
-    RESAMPLE = Image.Resampling.BILINEAR
-except Exception:
-    RESAMPLE = Image.BILINEAR
-
-# ===== Kompatibilitäts-Wrapper für st_canvas =====
-import inspect
-def draw_canvas(bg_pil, *, height, width, key, stroke_color="#00ff00"):
-    """Kompatibel mit alten & neuen drawable-canvas-Versionen."""
-    common = dict(
-        background_color=None,
-        height=height,
-        width=width,
-        drawing_mode="line",
-        stroke_width=4,
-        stroke_color=stroke_color,
-        update_streamlit=True,
-        display_toolbar=False,
-        key=key,
-    )
-    params = inspect.signature(st_canvas).parameters
-    if "background_image_url" in params:  # neuere Lib
-        import base64
-        from io import BytesIO
-        buf = BytesIO(); bg_pil.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        url = f"data:image/png;base64,{b64}"
-        return st_canvas(background_image=None, background_image_url=url, **common)
-    else:  # ältere Lib
-        return st_canvas(background_image=bg_pil, **common)
-
-# ========================= Simple IoU Tracker =========================
 class SimpleTracker:
-    def __init__(self, iou_thresh=0.3, max_age=30):
+    """Ganz einfacher IoU-Tracker ohne externe Libs."""
+    def __init__(self, iou_thresh=0.3, max_age=20):
         self.iou_thresh = iou_thresh
         self.max_age = max_age
         self.next_id = 1
-        self.tracks = {}
-
-    @staticmethod
-    def iou(a, b):
-        ax1, ay1, ax2, ay2 = a
-        bx1, by1, bx2, by2 = b
-        inter_x1, inter_y1 = max(ax1, bx1), max(ay1, by1)
-        inter_x2, inter_y2 = min(ax2, bx2), min(ay2, by2)
-        iw, ih = max(0, inter_x2 - inter_x1), max(0, inter_y2 - inter_y1)
-        inter = iw * ih
-        area_a = (ax2 - ax1) * (ay2 - ay1)
-        area_b = (bx2 - bx1) * (by2 - by1)
-        return inter / (area_a + area_b - inter + 1e-6)
+        self.tracks = {}  # id -> {"box":..., "age":0}
 
     def update(self, detections):
         assigned = set()
@@ -142,37 +87,38 @@ class SimpleTracker:
             best_iou, best_j = 0.0, -1
             for j, d in enumerate(detections):
                 if j in assigned: continue
-                i = self.iou(t["box"], d)
-                if i > best_iou:
-                    best_iou, best_j = i, j
+                i = simple_iou(t["box"], d)
+                if i > best_iou: best_iou, best_j = i, j
             if best_iou >= self.iou_thresh:
-                self.tracks[tid]["box"] = detections[best_j]
-                self.tracks[tid]["age"] = 0
+                t["box"] = detections[best_j]
+                t["age"] = 0
                 assigned.add(best_j)
             else:
-                self.tracks[tid]["age"] += 1
-                if self.tracks[tid]["age"] > self.max_age:
+                t["age"] += 1
+                if t["age"] > self.max_age:
                     del self.tracks[tid]
-
         for j, d in enumerate(detections):
             if j not in assigned:
-                self.tracks[self.next_id] = {"box": d, "age": 0, "last_center": None}
+                self.tracks[self.next_id] = {"box": d, "age": 0}
                 self.next_id += 1
-
         return [(tid, t["box"]) for tid, t in self.tracks.items()]
 
-# ========================= App =========================
-st.set_page_config(page_title="Sektorzeiten (einfach)", layout="wide")
-st.title("🏁 Sektorzeiten aus Video")
 
-st.markdown(
-    "1) **Video hochladen** → 2) Im **ersten Frame** **Einfahrts-** und **Ausfahrtslinie** zeichnen → "
-    "3) **Analysieren** → **Tabelle mit Zeiten pro Fahrzeug**."
-)
+# ============ App ============
+st.set_page_config(page_title="Sektorzeiten – Klicklinien", layout="wide")
+st.title("🏁 Sektorzeiten aus Video (Klick-Linien)")
+
+st.markdown("1) **Video hochladen** → 2) Im ersten Frame **2 Klicks** für *Einfahrtslinie* und **2 Klicks** für *Ausfahrtslinie* → 3) **Analysieren**.")
+
+# Session-State für Punkte
+if "entry_pts" not in st.session_state: st.session_state.entry_pts = []
+if "exit_pts"  not in st.session_state: st.session_state.exit_pts  = []
+if "mode"      not in st.session_state: st.session_state.mode = "Einfahrt"
 
 uploaded = st.file_uploader("Video (MP4/MOV)", type=["mp4", "mov", "m4v"], accept_multiple_files=False)
 
 if uploaded:
+    # Temp speichern
     suffix = os.path.splitext(uploaded.name)[1].lower()
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     tfile.write(uploaded.read()); tfile.flush(); tfile.close()
@@ -181,89 +127,100 @@ if uploaded:
     first_bgr = load_first_frame(video_path, max_w=1280)
     if first_bgr is None:
         st.error("Konnte ersten Frame nicht laden."); st.stop()
+    first_rgb = bgr2rgb(first_bgr)
+    h, w = first_rgb.shape[:2]
 
-    st.image(to_rgb(first_bgr), caption="Erster Frame", width=min(960, first_bgr.shape[1]))
-
-    first_rgb = to_rgb(first_bgr)
-    bg_img = Image.fromarray(first_rgb).convert("RGB")
-    canvas_w = min(640, bg_img.width)
-    canvas_h = int(bg_img.height * canvas_w / bg_img.width)
-    bg_canvas = bg_img.resize((canvas_w, canvas_h), RESAMPLE)
-
-    sx = first_bgr.shape[1] / float(canvas_w)
-    sy = first_bgr.shape[0] / float(canvas_h)
-
-    st.subheader("Sektorlinien zeichnen")
-    c1, c2 = st.columns(2, gap="large")
-
+    # UI: Modus wählen + Reset
+    c1, c2, c3 = st.columns([1,1,2])
     with c1:
-        st.markdown("**Einfahrts-Linie**")
-        entry_canvas = draw_canvas(bg_canvas, height=canvas_h, width=canvas_w, key="entry_canvas", stroke_color="#00ff00")
-
+        st.session_state.mode = st.radio("Modus", ["Einfahrt", "Ausfahrt"], horizontal=True, index=0 if st.session_state.mode=="Einfahrt" else 1)
     with c2:
-        st.markdown("**Ausfahrts-Linie**")
-        exit_canvas = draw_canvas(bg_canvas, height=canvas_h, width=canvas_w, key="exit_canvas", stroke_color="#ff0000")
+        if st.button("Reset Punkte"):
+            st.session_state.entry_pts = []
+            st.session_state.exit_pts = []
 
-    entry_line_c = line_from_canvas(getattr(entry_canvas, "json_data", None))
-    exit_line_c = line_from_canvas(getattr(exit_canvas, "json_data", None))
-    entry_line = scale_line_to_frame(entry_line_c, sx, sy) if entry_line_c else None
-    exit_line = scale_line_to_frame(exit_line_c, sx, sy) if exit_line_c else None
+    # Plotly-Figur mit bereits vorhandenen Linien
+    fig = make_fig_with_lines(first_rgb, st.session_state.entry_pts, st.session_state.exit_pts, width_px=900)
 
-    ready = entry_line is not None and exit_line is not None
+    # Klicks einsammeln
+    events = plotly_events(fig, click_event=True, hover_event=False, select_event=False, override_height=h, override_width=min(900, w))
+    if events:
+        x = float(events[0]["x"])
+        y = float(events[0]["y"])
+        if st.session_state.mode == "Einfahrt" and len(st.session_state.entry_pts) < 2:
+            st.session_state.entry_pts.append((x, y))
+        elif st.session_state.mode == "Ausfahrt" and len(st.session_state.exit_pts) < 2:
+            st.session_state.exit_pts.append((x, y))
+        # Figur mit neuen Punkten sofort neu malen
+        fig = make_fig_with_lines(first_rgb, st.session_state.entry_pts, st.session_state.exit_pts, width_px=900)
+        st.plotly_chart(fig, use_container_width=False)
+
+    ready = (len(st.session_state.entry_pts) == 2 and len(st.session_state.exit_pts) == 2)
+
     if not ready:
-        st.info("Bitte **beide** Linien ziehen (Start & Ende).")
+        st.info("⚠️ Klicke jeweils **zwei Punkte** für Einfahrt (grün) und Ausfahrt (rot).")
 
+    # ---------- Analyse ----------
     if st.button("Analysieren", type="primary", disabled=not ready):
-        st.write("🔎 Erkenne & tracke Fahrzeuge …")
+        entry_line = (st.session_state.entry_pts[0], st.session_state.entry_pts[1])
+        exit_line  = (st.session_state.exit_pts[0],  st.session_state.exit_pts[1])
+
         model = YOLO("yolov8n.pt")
         tracker = SimpleTracker(iou_thresh=0.3, max_age=20)
 
-        timings, last_centers = {}, {}
+        timings = {}     # tid -> {"entry": t, "exit": t}
+        last_centers = {}  # tid -> (x,y)
+
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         frame_i = 0
 
-        while True:
-            ok, frame = cap.read()
-            if not ok: break
-            yres = model.predict(frame, classes=[2, 3, 5, 7], conf=0.25, imgsz=960, verbose=False)
-            boxes = []
-            if yres and len(yres) > 0 and yres[0].boxes is not None:
-                xyxys = yres[0].boxes.xyxy.cpu().numpy()
-                for b in xyxys:
-                    boxes.append(tuple(b.tolist()))
+        with st.spinner("Analysiere …"):
+            while True:
+                ok, frame = cap.read()
+                if not ok: break
 
-            tracks = tracker.update(boxes)
+                yres = model.predict(frame, classes=[2, 3, 5, 7], conf=0.25, imgsz=960, verbose=False)
+                dets = []
+                if yres and len(yres) > 0 and yres[0].boxes is not None:
+                    xyxys = yres[0].boxes.xyxy.cpu().numpy()
+                    for b in xyxys:
+                        dets.append(tuple(b.tolist()))
 
-            for tid, box in tracks:
-                cx, cy = center_of_box(box)
-                p2 = (cx, cy)
-                p1 = last_centers.get(tid, p2)
-                if tid not in timings:
-                    timings[tid] = {"entry": None, "exit": None}
+                tracks = tracker.update(dets)
 
-                if timings[tid]["entry"] is None and seg_intersection(p1, p2, entry_line[0], entry_line[1]):
-                    timings[tid]["entry"] = frame_i / fps
-                if timings[tid]["exit"] is None and seg_intersection(p1, p2, exit_line[0], exit_line[1]):
-                    timings[tid]["exit"] = frame_i / fps
+                for tid, box in tracks:
+                    cx, cy = center_of_box(box)
+                    p2 = (cx, cy)
+                    p1 = last_centers.get(tid, p2)
+                    if tid not in timings: timings[tid] = {"entry": None, "exit": None}
 
-                last_centers[tid] = p2
-            frame_i += 1
+                    if timings[tid]["entry"] is None and seg_intersection(p1, p2, entry_line[0], entry_line[1]):
+                        timings[tid]["entry"] = frame_i / fps
+                    if timings[tid]["exit"] is None and seg_intersection(p1, p2, exit_line[0], exit_line[1]):
+                        timings[tid]["exit"] = frame_i / fps
+
+                    last_centers[tid] = p2
+
+                frame_i += 1
+
         cap.release()
 
         rows = []
         for tid, t in timings.items():
-            if t["entry"] and t["exit"] and t["exit"] > t["entry"]:
+            t_in, t_out = t["entry"], t["exit"]
+            if t_in is not None and t_out is not None and t_out > t_in:
                 rows.append({
                     "Fahrzeug-ID": int(tid),
-                    "t_in [s]": round(t["entry"], 3),
-                    "t_out [s]": round(t["exit"], 3),
-                    "Sektorzeit [s]": round(t["exit"] - t["entry"], 3),
+                    "t_in [s]": round(t_in, 3),
+                    "t_out [s]": round(t_out, 3),
+                    "Sektorzeit [s]": round(t_out - t_in, 3),
                 })
 
         if not rows:
-            st.warning("Keine gültigen Sektorzeiten erkannt."); st.stop()
+            st.warning("Keine gültigen Sektorzeiten erkannt. Prüfe Linienposition und Videoqualität.")
+            st.stop()
 
         rows = sorted(rows, key=lambda r: r["Sektorzeit [s]"])
-        st.success(f"Fertig! {len(rows)} Fahrzeuge erkannt.")
+        st.success(f"Fertig! {len(rows)} Fahrzeuge mit gültiger Sektorzeit.")
         st.dataframe(rows, use_container_width=True)
