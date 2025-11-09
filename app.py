@@ -235,13 +235,13 @@ if uploaded:
                 if tid not in timings:
                     timings[tid] = {"entry": None, "exit": None}
 
-                if timings[tid]["entry"] is None and seg_intersection(p1, p2, entry_line[0], entry_line[1])):
+                if timings[tid]["entry"] is None and seg_intersection(p1, p2, entry_line[0], entry_line[1]):
                     timings[tid]["entry"] = frame_i / fps
-                    cv2.circle(vis, (cx,cy), 10, (0,255,0), 3)  # markiere Crossing
+                    cv2.circle(vis, (cx, cy), 10, (0, 255, 0), 3)  # markiere Crossing
 
-                if timings[tid]["exit"] is None and seg_intersection(p1, p2, exit_line[0], exit_line[1])):
+                if timings[tid]["exit"] is None and seg_intersection(p1, p2, exit_line[0], exit_line[1]):
                     timings[tid]["exit"] = frame_i / fps
-                    cv2.circle(vis, (cx,cy), 10, (0,0,255), 3)
+                    cv2.circle(vis, (cx, cy), 10, (0, 0, 255), 3)
 
                 last_centers[tid] = p2
 
