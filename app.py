@@ -1,11 +1,26 @@
-import os, io, tempfile, time
+# app.py
+import os, io, base64, tempfile, time, sys
 import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
+
+# ---- LAP-Fix: vor Ultralytics importieren (für Tracking) --------------------
+try:
+    import lap  # type: ignore
+except ModuleNotFoundError:
+    try:
+        import lapx as lap  # type: ignore
+        sys.modules["lap"] = lap
+    except ModuleNotFoundError:
+        lap = None  # wir zeigen später eine klare Fehlermeldung
+
 from ultralytics import YOLO
 from moviepy.editor import VideoFileClip
-from streamlit_drawable_canvas import st_canvas
+
+import plotly.graph_objs as go
+from streamlit_plotly_events import plotly_events
+
 
 # =================== Utils ===================
 def load_first_frame(video_path, max_w=960):
@@ -41,24 +56,6 @@ def resize_to_width(frame, width):
         return frame
     s = width / w
     return cv2.resize(frame, (width, int(h * s)), interpolation=cv2.INTER_AREA)
-
-def line_from_canvas(json_data):
-    """
-    Extrahiert die erste gezeichnete Linie aus dem Canvas-JSON.
-    Gibt ((x1,y1),(x2,y2)) in Canvas-Koordinaten zurück oder None.
-    """
-    if not json_data or "objects" not in json_data:
-        return None
-    for obj in json_data["objects"]:
-        if obj.get("type") == "line":
-            x1 = obj["x1"] + obj["left"]; y1 = obj["y1"] + obj["top"]
-            x2 = obj["x2"] + obj["left"]; y2 = obj["y2"] + obj["top"]
-            return ( (float(x1), float(y1)), (float(x2), float(y2)) )
-        if obj.get("type") == "path" and obj.get("path"):
-            # falls jemand eine kurze Linie als Pfad zeichnet
-            (mx,my,*_), (lx,ly,*_) = obj["path"][0], obj["path"][-1]
-            return ( (float(mx), float(my)), (float(lx), float(ly)) )
-    return None
 
 def trim_clip(src_path, dst_path, t0, t1):
     with VideoFileClip(src_path) as clip:
@@ -113,15 +110,85 @@ def detect_times(video_path, entry_line, exit_line, model):
     valid.sort(key=lambda x: x[3])
     return valid, fps, first
 
+
+# ---------- Plotly Helper: 2 Punkte auf Bild klicken ----------
+def click_two_points_on_image(img_bgr, title: str, key: str):
+    """
+    Zeigt ein klickbares Bild (Plotly) und gibt nach zwei Klicks (x,y),(x,y) zurück.
+    - Kein Zoom-Rechteck (dragmode='pan', Tools entfernt)
+    - Stabiler Zustand via uirevision (verhindert 'Springen')
+    """
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    h, w = img_rgb.shape[:2]
+
+    # Session-State für Punkte
+    pts_key = f"{key}_pts"
+    if pts_key not in st.session_state:
+        st.session_state[pts_key] = []
+
+    fig = go.Figure(data=[go.Image(z=img_rgb)])
+    fig.update_xaxes(visible=False, range=[0, w])
+    fig.update_yaxes(visible=False, range=[h, 0])
+    fig.update_layout(
+        dragmode="pan",
+        clickmode="event+select",
+        margin=dict(l=0, r=0, t=30, b=0),
+        width=min(900, int(w * 0.95)),
+        height=int(min(900, int(w * 0.95)) * (h / w)),
+        title=title,
+        uirevision="keep",  # verhindert ständiges Redraw
+    )
+
+    # Bereits gesetzte Punkte als Scatter anzeigen
+    if len(st.session_state[pts_key]) > 0:
+        xs = [p[0] for p in st.session_state[pts_key]]
+        ys = [p[1] for p in st.session_state[pts_key]]
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="markers+lines",
+            marker=dict(size=8, color="lime"),
+            line=dict(width=3, color="lime"),
+            name="Line"
+        ))
+
+    config = {
+        "displaylogo": False,
+        "modeBarButtonsToRemove": [
+            "zoom2d", "select2d", "lasso2d", "autoscale", "toggleSpikelines",
+            "zoomIn2d", "zoomOut2d", "resetScale2d"
+        ],
+        "scrollZoom": False
+    }
+
+    st.caption("❗ Klicke **genau 2 Punkte** (Start und Ende der Linie). Doppelklick löscht Auswahl.")
+    events = plotly_events(fig, click_event=True, hover_event=False, select_event=False, key=key, config=config)
+
+    # Klicks einsammeln
+    if events:
+        e = events[-1]
+        if ("x" in e) and ("y" in e):
+            st.session_state[pts_key].append((float(e["x"]), float(e["y"])))
+            st.experimental_rerun()
+
+    # Doppelklick-Reset (einfacher Button)
+    cols = st.columns([1, 3, 1])
+    with cols[0]:
+        if st.button("Reset", key=f"reset_{key}", help="Auswahl löschen"):
+            st.session_state[pts_key] = []
+            st.experimental_rerun()
+
+    if len(st.session_state[pts_key]) >= 2:
+        return st.session_state[pts_key][0], st.session_state[pts_key][1]
+    return None, None
+
+
 # =================== UI ===================
 st.set_page_config(page_title="S-Curve Analyzer (Web)", layout="wide")
-st.title("🏎️ S-Curve Analyzer – Linien ziehen auf Canvas")
+st.title("🏎️ S-Curve Analyzer – komplett im Browser")
 
 st.markdown(
-    "1. Lade **1–3** Stativ-Clips der S-Kurve hoch.  \n"
+    "1. Lade **1–3 Stativ-Clips** der S-Kurve hoch.  \n"
     "2. Wähle den **Referenz-Clip**.  \n"
-    "3. **Links:** Einfahr-Linie **ziehen** (Maus drücken & ziehen).  \n"
-    "   **Rechts:** Ausfahr-Linie **ziehen**.  \n"
+    "3. Klicke auf dem Vorschau-Frame je **2 Punkte** für **Einfahrt** und **Ausfahrt**.  \n"
     "4. **Analysieren** → YOLO-Tracking, Sektorzeiten, Auto-Trim & Overlay."
 )
 
@@ -129,16 +196,17 @@ st.markdown(
 if "tmp_paths" not in st.session_state: st.session_state.tmp_paths = []
 if "names"     not in st.session_state: st.session_state.names = []
 if "ref_idx"   not in st.session_state: st.session_state.ref_idx = 0
+if "entry_line" not in st.session_state: st.session_state.entry_line = None
+if "exit_line"  not in st.session_state: st.session_state.exit_line  = None
 
 uploaded = st.file_uploader(
     "Clips (MP4/MOV)", type=["mp4", "mov", "m4v"], accept_multiple_files=True
 )
-alpha_top = st.slider("Deckkraft obere Ebenen", 0.30, 0.80, 0.50, 0.05)
+alpha_top = st.slider("Deckkraft obere Ebenen", 0.3, 0.8, 0.5, 0.05)
 out_width = st.select_slider("Exportbreite", options=[854, 960, 1280, 1600, 1920], value=1280)
 
 # Upload → Tempfiles erzeugen
 if uploaded:
-    # alte Temps putzen
     for p in st.session_state.tmp_paths:
         try: os.remove(p)
         except Exception: pass
@@ -150,6 +218,8 @@ if uploaded:
         st.session_state.tmp_paths.append(t.name)
         st.session_state.names.append(uf.name)
     st.session_state.ref_idx = 0
+    st.session_state.entry_line = None
+    st.session_state.exit_line  = None
 
 paths = st.session_state.tmp_paths
 names = st.session_state.names
@@ -161,7 +231,6 @@ if paths:
         index=st.session_state.ref_idx, format_func=lambda i: names[i]
     )
 
-    # Preview + Basisbild für Canvas
     first_frame = load_first_frame(paths[st.session_state.ref_idx], max_w=960)
     if first_frame is None:
         st.error("Konnte ersten Frame nicht laden."); st.stop()
@@ -169,83 +238,42 @@ if paths:
     st.markdown("### Vorschau-Frame")
     st.image(cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB))
 
-    # ---- Canvas vorbereiten (PIL RGBA + sauber skaliert) ----
-    img_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-    bg_img_full = Image.fromarray(img_rgb).convert("RGBA")
+    # --------- Linien erfassen ----------
+    st.markdown("### Einfahr-Linie setzen")
+    ep1, ep2 = click_two_points_on_image(first_frame, "Einfahrt: 2 Punkte klicken", key=f"entry_{st.session_state.ref_idx}")
+    if ep1 and ep2:
+        st.session_state.entry_line = (ep1, ep2)
+        st.success(f"Einfahrt gesetzt: {tuple(round(v,1) for v in (ep1+ep2))}")
 
-    canvas_w = min(600, bg_img_full.width)     # ggf. 512–720
-    canvas_h = int(bg_img_full.height * canvas_w / bg_img_full.width)
-
-    bg_img_canvas = bg_img_full.resize((canvas_w, canvas_h), Image.BILINEAR)
-
-    st.subheader("Sektorlinien zeichnen")
-    c1, c2 = st.columns(2, gap="large")
-
-    with c1:
-        st.caption("Einfahrt – ziehe eine Linie")
-        entry_cv = st_canvas(
-            fill_color="rgba(0,255,0,0.10)",
-            stroke_width=3,
-            stroke_color="#00ff00",
-            background_image=bg_img_canvas.copy(),   # eigene Instanz pro Canvas
-            background_color="#00000000",
-            update_streamlit=True,
-            height=canvas_h,
-            width=canvas_w,
-            drawing_mode="line",
-            key=f"entry_canvas_{st.session_state.ref_idx}",
-            display_toolbar=False,
-        )
-
-    with c2:
-        st.caption("Ausfahrt – ziehe eine Linie")
-        exit_cv = st_canvas(
-            fill_color="rgba(255,0,0,0.10)",
-            stroke_width=3,
-            stroke_color="#ff0000",
-            background_image=bg_img_canvas.copy(),   # eigene Instanz pro Canvas
-            background_color="#00000000",
-            update_streamlit=True,
-            height=canvas_h,
-            width=canvas_w,
-            drawing_mode="line",
-            key=f"exit_canvas_{st.session_state.ref_idx}",
-            display_toolbar=False,
-        )
-
-    # Linien extrahieren (Canvas-Koordinaten)
-    entry_line = line_from_canvas(entry_cv.json_data)
-    exit_line  = line_from_canvas(exit_cv.json_data)
-
-    # Hinweis, falls noch keine Linie gezeichnet
-    if not entry_line or not exit_line:
-        st.info("Zeichne links und rechts je **eine Linie** und klicke danach auf **Analysieren**.")
+    st.markdown("### Ausfahr-Linie setzen")
+    xp1, xp2 = click_two_points_on_image(first_frame, "Ausfahrt: 2 Punkte klicken", key=f"exit_{st.session_state.ref_idx}")
+    if xp1 and xp2:
+        st.session_state.exit_line = (xp1, xp2)
+        st.success(f"Ausfahrt gesetzt: {tuple(round(v,1) for v in (xp1+xp2))}")
 
     # -------------------------------------------------
     if st.button("Analysieren", type="primary"):
-        if not entry_line or not exit_line:
-            st.error("Bitte **beide** Linien zuerst zeichnen.")
+        if "lap" not in sys.modules:
+            st.error(
+                "Für das Tracking wird ein LAP-Paket benötigt. "
+                "Bitte `lapx` (oder `lap`) in der Umgebung installieren "
+                "(z. B. `lapx==0.5.6`)."
+            )
             st.stop()
 
-        # ACHTUNG: Die Canvas ist auf (canvas_w x canvas_h) skaliert.
-        # Wir müssen die Linien zurück auf die Ausgangsbreite/-höhe skalieren,
-        # denn YOLO/Tracking läuft auf originalen Videoframes (width_ref).
-        scale_x = bg_img_full.width  / canvas_w
-        scale_y = bg_img_full.height / canvas_h
+        if not st.session_state.entry_line or not st.session_state.exit_line:
+            st.error("Bitte **beide** Linien durch je 2 Klicks setzen.")
+            st.stop()
 
-        def upscale_line(line):
-            (x1,y1),(x2,y2) = line
-            return ((x1*scale_x, y1*scale_y), (x2*scale_x, y2*scale_y))
-
-        entry_line_up = upscale_line(entry_line)
-        exit_line_up  = upscale_line(exit_line)
+        entry_line = st.session_state.entry_line
+        exit_line  = st.session_state.exit_line
 
         model = YOLO("yolov8n.pt")
         results_table, trimmed = [], []
 
         with st.spinner("Analysiere Clips …"):
             for idx, vpath in enumerate(paths):
-                valid, fps, _ = detect_times(vpath, entry_line_up, exit_line_up, model)
+                valid, fps, _ = detect_times(vpath, entry_line, exit_line, model)
                 if not valid:
                     results_table.append(
                         {"Clip": os.path.basename(vpath),
@@ -296,15 +324,15 @@ if paths:
             out_path = os.path.join(tempfile.gettempdir(), "overlay.mp4")
             writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), out_fps, (w, h))
 
-            # Initiale Frames
+            # initiale Frames
             init_frames = [ref]
             for i in range(1, len(caps)):
                 ok, fr = caps[i].read()
                 fr = np.zeros_like(ref) if not ok else resize_to_width(fr, out_width)
                 init_frames.append(fr)
-            writer.write(alpha_blend(init_frames, alphas[:len(init_frames)]))
+            writer.write(alpha_blend(init_frames, alphas[: len(init_frames)]))
 
-            # Rest
+            # restliche Frames
             while True:
                 frames, ended = [], 0
                 for c in caps:
@@ -316,7 +344,7 @@ if paths:
                 if ended == len(caps): break
                 while len(frames) < len(caps):
                     frames.append(np.zeros((h, w, 3), dtype=np.uint8))
-                writer.write(alpha_blend(frames, alphas[:len(frames)]))
+                writer.write(alpha_blend(frames, alphas[: len(frames)]))
 
             for c in caps: c.release()
             writer.release()
