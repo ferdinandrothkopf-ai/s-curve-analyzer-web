@@ -160,43 +160,49 @@ if paths:
     st.markdown("**Vorschau-Frame:**")
     st.image(bg_img)  # kompatibel mit Streamlit 1.33.0
 
-    # ---------- robuster Canvas-Hintergrund ----------
-    # Auf Spaltenbreite skalieren
-    canvas_w = min(600, bg_img.width)             # bei Bedarf 512–720 anpassen
+    canvas_w = min(600, bg_img.width)                 # ggf. 512 testen
     canvas_h = int(bg_img.height * canvas_w / bg_img.width)
+
+    # -> Statt PIL-Image: als NumPy-Array (RGB) übergeben
     bg_canvas = bg_img.resize((canvas_w, canvas_h), Image.BILINEAR)
-
-    # PNG-Bytes -> eigene Instanz pro Canvas (Workaround gegen leeren Background)
-    buf1 = io.BytesIO(); bg_canvas.save(buf1, format="PNG"); buf1.seek(0)
-    bg_for_entry = Image.open(io.BytesIO(buf1.getvalue())).convert("RGBA")
-
-    buf2 = io.BytesIO(); bg_canvas.save(buf2, format="PNG"); buf2.seek(0)
-    bg_for_exit  = Image.open(io.BytesIO(buf2.getvalue())).convert("RGBA")
+    bg_np = np.array(bg_canvas.convert("RGB"))        # (H, W, 3) uint8
 
     st.subheader("Sektorlinien zeichnen")
     c1, c2 = st.columns(2, gap="large")
 
     with c1:
         entry = st_canvas(
-            fill_color="rgba(0,255,0,0.1)", stroke_width=3, stroke_color="#00ff00",
-            background_image=bg_for_entry,
+            fill_color="rgba(0,255,0,0.1)",
+            stroke_width=3,
+            stroke_color="#00ff00",
+            background_image=bg_np,                   # <-- NumPy statt PIL
             background_color="#00000000",
             update_streamlit=True,
-            height=int(canvas_h), width=int(canvas_w),
+            height=int(canvas_h),
+            width=int(canvas_w),
             drawing_mode="line",
             key=f"entry_canvas_{st.session_state.ref_idx}",
+            display_toolbar=False,
         )
 
     with c2:
         exitc = st_canvas(
-            fill_color="rgba(255,0,0,0.1)", stroke_width=3, stroke_color="#ff0000",
-            background_image=bg_for_exit,
+            fill_color="rgba(255,0,0,0.1)",
+            stroke_width=3,
+            stroke_color="#ff0000",
+            background_image=bg_np,                   # <-- NumPy statt PIL
             background_color="#00000000",
             update_streamlit=True,
-            height=int(canvas_h), width=int(canvas_w),
+            height=int(canvas_h),
+            width=int(canvas_w),
             drawing_mode="line",
             key=f"exit_canvas_{st.session_state.ref_idx}",
+            display_toolbar=False,
         )
+
+
+
+    
     # -------------------------------------------------
 
     if st.button("Analysieren", type="primary"):
