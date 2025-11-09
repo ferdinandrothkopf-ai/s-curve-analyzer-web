@@ -1,11 +1,13 @@
-# app.py
 import os, io, base64, tempfile, time
 import cv2
 import numpy as np
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image
 from ultralytics import YOLO
-from streamlit_drawable_canvas import st_canvas
+from moviepy.editor import VideoFileClip
+
+import plotly.graph_objs as go
+from streamlit_plotly_events import plotly_events
 
 # =================== Utils ===================
 def load_first_frame(video_path, max_w=960):
@@ -42,25 +44,17 @@ def resize_to_width(frame, width):
     s = width / w
     return cv2.resize(frame, (width, int(h * s)), interpolation=cv2.INTER_AREA)
 
-def line_from_canvas(json_data):
-    if not json_data or "objects" not in json_data:
-        return None
-    for obj in json_data["objects"]:
-        if obj["type"] == "line":
-            x1 = obj["x1"] + obj["left"]; y1 = obj["y1"] + obj["top"]
-            x2 = obj["x2"] + obj["left"]; y2 = obj["y2"] + obj["top"]
-            return ((x1, y1), (x2, y2))
-        if obj["type"] == "path" and obj.get("path"):
-            (mx, my, *_), (lx, ly, *_) = obj["path"][0], obj["path"][-1]
-            return ((mx, my), (lx, ly))
-    return None
+def line_from_two_points(p, q):
+    # p=(x,y), q=(x,y)
+    return (tuple(p), tuple(q))
 
 def trim_clip(src_path, dst_path, t0, t1):
-    from moviepy.editor import VideoFileClip  # lazy import
     with VideoFileClip(src_path) as clip:
         sub = clip.subclip(max(t0, 0), max(t1, 0))
-        sub.write_videofile(dst_path, codec="libx264", audio=False,
-                            fps=clip.fps, verbose=False, logger=None)
+        sub.write_videofile(
+            dst_path, codec="libx264", audio=False, fps=clip.fps,
+            verbose=False, logger=None
+        )
 
 def detect_times(video_path, entry_line, exit_line, model):
     timings, last_centers = {}, {}
@@ -107,64 +101,61 @@ def detect_times(video_path, entry_line, exit_line, model):
     valid.sort(key=lambda x: x[3])
     return valid, fps, first
 
-# ============ Robuste Canvas-Helper ============
-
-def pil_to_data_url(pil_img: Image.Image) -> str:
+# ---------- Plotly Helpers (Bild als Hintergrund + Klicks erfassen) ----------
+def pil_to_data_url(img: Image.Image) -> str:
     buf = io.BytesIO()
-    pil_img.save(buf, format="PNG")
+    img.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{b64}"
+    return "data:image/png;base64," + b64
 
-def draw_canvas(bg_image: Image.Image, width: int, height: int, key: str,
-                stroke_color: str, fill_color: str):
-    """
-    Zeigt den Hintergrund sicher im Canvas.
-    1) Try: background_image_url (Data-URL), 2) Fallback: background_image (PIL).
-    """
-    bg_scaled = bg_image.resize((width, height), Image.BILINEAR)
+def click_two_points_on_image(img_bgr: np.ndarray, title: str, key: str):
+    """Zeigt das Bild (BGR) als Plotly-Hintergrund und gibt nach genau 2 Klicks die (x,y)-Paare zurück."""
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    h, w = img_rgb.shape[:2]
+    data_url = pil_to_data_url(Image.fromarray(img_rgb))
 
-    # Variante A: Data-URL (wenn Version das kann)
-    try:
-        return st_canvas(
-            fill_color=fill_color,
-            stroke_width=3,
-            stroke_color=stroke_color,
-            background_image_url=pil_to_data_url(bg_scaled),
-            update_streamlit=True,
-            height=height, width=width,
-            drawing_mode="line",
-            key=key,
-            display_toolbar=False,
-        )
-    except TypeError:
-        # Variante B: klassisch mit PIL
-        return st_canvas(
-            fill_color=fill_color,
-            stroke_width=3,
-            stroke_color=stroke_color,
-            background_image=bg_scaled.convert("RGBA").copy(),
-            background_color=None,    # None ist mit älteren Builds stabiler als "#00000000"
-            update_streamlit=True,
-            height=height, width=width,
-            drawing_mode="line",
-            key=key,
-            display_toolbar=False,
-        )
+    fig = go.Figure()
+    fig.update_xaxes(visible=False, range=[0, w])
+    fig.update_yaxes(visible=False, range=[h, 0])  # y-Achse invertiert für Bildkoords
+    fig.add_layout_image(
+        dict(source=data_url, xref="x", yref="y", x=0, y=0, sizex=w, sizey=h, sizing="stretch", layer="below")
+    )
+    fig.update_layout(
+        width=min(700, int(w*0.9)), height=int(min(700, int(w*0.9)) * (h/w)),
+        margin=dict(l=0, r=0, t=30, b=0), title=title
+    )
+
+    st.caption("❗ Klicke **genau 2 Punkte** (Start und Ende der Linie).")
+    events = plotly_events(fig, click_event=True, hover_event=False, select_event=False, key=key)
+
+    # Zeige optional die bisher geklickten Punkte
+    if events:
+        pts = [(e["x"], e["y"]) for e in events if ("x" in e and "y" in e)]
+        st.write("Geklickt:", pts)
+
+    if events and len(events) >= 2:
+        p1 = (float(events[0]["x"]), float(events[0]["y"]))
+        p2 = (float(events[1]["x"]), float(events[1]["y"]))
+        return p1, p2
+    return None, None
 
 # =================== UI ===================
 st.set_page_config(page_title="S-Curve Analyzer (Web)", layout="wide")
-st.title("🏎️ S-Curve Analyzer – komplett im Browser (kostenlos)")
+st.title("🏎️ S-Curve Analyzer – komplett im Browser (Plotly-Klicks)")
 
 st.markdown(
-    "1. Lade **1–3 Stativ-Clips** der gleichen S-Kurve hoch.  \n"
-    "2. Wähle den **Referenz-Clip** und zeichne **Einfahrt**/**Ausfahrt**.  \n"
-    "3. **Analysieren** → Erkennung, Sektorzeiten, Auto-Trim & Overlay."
+    "1. Lade **1–3 Stativ-Clips** der S-Kurve hoch.  \n"
+    "2. Wähle den **Referenz-Clip**.  \n"
+    "3. Klicke auf dem Vorschau-Frame je **2 Punkte** für **Einfahrt** und **Ausfahrt**.  \n"
+    "4. **Analysieren** → YOLO-Tracking, Sektorzeiten, Auto-Trim & Overlay."
 )
 
 # Session State
 if "tmp_paths" not in st.session_state: st.session_state.tmp_paths = []
 if "names"     not in st.session_state: st.session_state.names = []
 if "ref_idx"   not in st.session_state: st.session_state.ref_idx = 0
+if "entry_line" not in st.session_state: st.session_state.entry_line = None
+if "exit_line"  not in st.session_state: st.session_state.exit_line  = None
 
 uploaded = st.file_uploader(
     "Clips (MP4/MOV)", type=["mp4", "mov", "m4v"], accept_multiple_files=True
@@ -185,6 +176,8 @@ if uploaded:
         st.session_state.tmp_paths.append(t.name)
         st.session_state.names.append(uf.name)
     st.session_state.ref_idx = 0
+    st.session_state.entry_line = None
+    st.session_state.exit_line  = None
 
 paths = st.session_state.tmp_paths
 names = st.session_state.names
@@ -196,66 +189,34 @@ if paths:
         index=st.session_state.ref_idx, format_func=lambda i: names[i]
     )
 
-    # Preview + Basisbild
     first_frame = load_first_frame(paths[st.session_state.ref_idx], max_w=960)
     if first_frame is None:
         st.error("Konnte ersten Frame nicht laden."); st.stop()
 
-    img_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-    bg_img  = Image.fromarray(img_rgb).convert("RGB")
+    st.markdown("### Vorschau-Frame")
+    st.image(cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB))
 
-    st.markdown("**Vorschau-Frame:**")
-    st.image(bg_img)
+    # --------- Linien erfassen via Klicks ----------
+    st.markdown("### Einfahr-Linie wählen")
+    ep1, ep2 = click_two_points_on_image(first_frame, "Einfahrt: 2 Punkte klicken", key=f"entry_{st.session_state.ref_idx}")
+    if ep1 and ep2:
+        st.session_state.entry_line = (ep1, ep2)
+        st.success(f"Einfahrt gesetzt: {ep1} → {ep2}")
 
-    # Canvas-Größe (gleich breite Spalten)
-    canvas_w = min(600, bg_img.width)             # bei Bedarf 512–720 anpassen
-    canvas_h = int(bg_img.height * canvas_w / bg_img.width)
-
-    # -------- Diagnose (optional) --------
-    if st.checkbox("Diagnose-Canvas anzeigen (Hilft bei weißen Hintergründen)"):
-        # synthetischer Checker
-        tst_w, tst_h = 512, 320
-        checker = Image.new("RGBA", (tst_w, tst_h), (240, 240, 240, 255))
-        d = ImageDraw.Draw(checker)
-        for y in range(0, tst_h, 40):
-            for x in range(0, tst_w, 40):
-                if (x//40 + y//40) % 2 == 0:
-                    d.rectangle([x, y, x+40, y+40], fill=(200, 230, 200, 255))
-        st.caption("Diag A) Checker-Hintergrund")
-        _ = draw_canvas(checker.convert("RGB"), tst_w, tst_h, key="diag_checker",
-                        stroke_color="#333333", fill_color="rgba(0,0,0,0.0)")
-
-        st.caption("Diag B) Dein Frame skaliert")
-        _ = draw_canvas(bg_img, canvas_w, canvas_h,
-                        key=f"diag_frame_{st.session_state.ref_idx}",
-                        stroke_color="#333333", fill_color="rgba(0,0,0,0.0)")
-        st.write({"bg_img_size": (bg_img.width, bg_img.height),
-                  "canvas_size": (canvas_w, canvas_h)})
-
-    # -------- Sektorlinien zeichnen --------
-    st.subheader("Sektorlinien zeichnen")
-    col1, col2 = st.columns(2, gap="large")
-
-    with col1:
-        entry = draw_canvas(
-            bg_image=bg_img, width=canvas_w, height=canvas_h,
-            key=f"entry_canvas_{st.session_state.ref_idx}",
-            stroke_color="#00ff00", fill_color="rgba(0,255,0,0.1)"
-        )
-
-    with col2:
-        exitc = draw_canvas(
-            bg_image=bg_img, width=canvas_w, height=canvas_h,
-            key=f"exit_canvas_{st.session_state.ref_idx}",
-            stroke_color="#ff0000", fill_color="rgba(255,0,0,0.1)"
-        )
+    st.markdown("### Ausfahr-Linie wählen")
+    xp1, xp2 = click_two_points_on_image(first_frame, "Ausfahrt: 2 Punkte klicken", key=f"exit_{st.session_state.ref_idx}")
+    if xp1 and xp2:
+        st.session_state.exit_line = (xp1, xp2)
+        st.success(f"Ausfahrt gesetzt: {xp1} → {xp2}")
 
     # -------------------------------------------------
     if st.button("Analysieren", type="primary"):
-        entry_line = line_from_canvas(entry.json_data)
-        exit_line  = line_from_canvas(exitc.json_data)
-        if not entry_line or not exit_line:
-            st.error("Bitte beide Linien zeichnen."); st.stop()
+        if not st.session_state.entry_line or not st.session_state.exit_line:
+            st.error("Bitte erst **beide** Linien durch je 2 Klicks setzen.")
+            st.stop()
+
+        entry_line = st.session_state.entry_line
+        exit_line  = st.session_state.exit_line
 
         model = YOLO("yolov8n.pt")
         results_table, trimmed = [], []
@@ -338,6 +299,8 @@ if paths:
 
             st.success("Fertig! Overlay & Zeiten erzeugt.")
             st.video(out_path)
-            st.download_button("Overlay-Video herunterladen",
-                               data=open(out_path, "rb").read(),
-                               file_name="overlay.mp4", mime="video/mp4")
+            st.download_button(
+                "Overlay-Video herunterladen",
+                data=open(out_path, "rb").read(),
+                file_name="overlay.mp4", mime="video/mp4"
+            )
