@@ -3,5 +3,3 @@ opencv-python-headless
 streamlit
 streamlit-drawable-canvas
 pillow>=10
-moviepy
-lapx==0.5.6
