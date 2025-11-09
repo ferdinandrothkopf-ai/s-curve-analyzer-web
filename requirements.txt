@@ -1,11 +1,7 @@
 streamlit==1.33.0
 streamlit-drawable-canvas==0.9.3
-ultralytics==8.2.103
-torch==2.2.2
-torchvision==0.17.2
-numpy<2
+pillow==10.4.0
+numpy==1.26.4
 opencv-python-headless==4.9.0.80
+ultralytics==8.2.103
 moviepy==1.0.3
-imageio-ffmpeg==0.4.9
-filterpy==1.4.5
-Pillow==10.4.0
