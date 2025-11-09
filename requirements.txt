@@ -1,5 +1,7 @@
 streamlit==1.37.1
 
+Pillow==10.4.0
+
 # NumPy < 2, damit cv2 sauber importiert
 numpy<2
 opencv-python-headless==4.9.0.80
