@@ -1,8 +1,15 @@
-streamlit
-ultralytics
-opencv-python-headless
-numpy
-filterpy
-streamlit-drawable-canvas
-moviepy
-imageio-ffmpeg
+streamlit==1.37.1
+# Wichtig: OpenCV + NumPy kompatibel pinnen
+numpy<2
+opencv-python-headless==4.9.0.80
+
+# YOLO / Ultralytics (benötigt PyTorch)
+ultralytics==8.2.103
+torch==2.2.2
+torchvision==0.17.2
+
+# UI & Video
+streamlit-drawable-canvas==0.9.3
+moviepy==1.0.3
+imageio-ffmpeg==0.4.9
+filterpy==1.4.5
